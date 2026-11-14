@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eatsights
+  namespace: eatsights
+spec:
+  rules:
+    - host: eatsights.letsimpl.fyi
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: eatsights
+                port: { name: http }
+  tls:
+    - hosts: [eatsights.letsimpl.fyi]
+      secretName: eatsights-tls

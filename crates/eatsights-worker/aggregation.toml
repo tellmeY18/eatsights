@@ -1,0 +1,31 @@
+# Aggregation parameters (AGENTS.md D6). Rationale: docs/adr/0003-aggregation.md.
+# Changing any number here MUST bump algorithm_version.
+algorithm_version = "agg-2026.11-1"
+
+[weights]
+unverified = 0.5
+member = 1.0
+trusted = 1.5
+verifier = 2.0
+vendor = 1.5
+import = 0.5
+
+[thresholds]
+# Distinct pseudonyms that must back a value before it can be `confirmed`. Never below 2.
+min_distinct_to_confirm = 2
+# Confidence needed (together with the above) for `confirmed`.
+confirm_confidence = 0.6
+# Prior weight in confidence = share * support / (support + prior).
+confidence_prior = 1.0
+# Contested when dispute weight, or the runner-up's support, reaches this fraction of the winner's.
+contested_ratio = 0.5
+# Stale when the newest supporting observation is older than this many half-lives...
+stale_half_lives = 3.0
+# ...or when the winner's decayed support falls below this.
+stale_min_support = 0.1
+# How strongly one unit of dispute weight cancels one unit of support.
+dispute_factor = 1.0
+# Median: share of weight within this relative distance of the median counts as agreeing.
+median_tolerance = 0.1
+# Facts list at most this many basis observation ids.
+basis_cap = 20

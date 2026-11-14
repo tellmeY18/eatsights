@@ -1,0 +1,33 @@
+[package]
+name = "eatsights-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+eatsights-core = { path = "../eatsights-core" }
+eatsights-db = { path = "../eatsights-db" }
+poem = "3"
+poem-openapi = { version = "5", features = ["swagger-ui"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+moka = { version = "0.12", default-features = false, features = ["sync"] }
+governor = "0.10"
+flate2 = "1"
+bytes = "1"
+tracing = "0.1"
+thiserror = "2"
+sqlx = { version = "0.8", default-features = false, features = ["postgres"] }
+
+[dev-dependencies]
+eatsights-worker = { path = "../eatsights-worker" }
+poem = { version = "3", features = ["test"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }

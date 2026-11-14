@@ -1,0 +1,39 @@
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Transitive via poem (non-optional deps). Eatsights never parses XML or YAML input:
+# no Xml/Yaml extractors are used. Revisit when poem updates them.
+ignore = [
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml via poem; no XML parsing in Eatsights" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml via poem; no XML parsing in Eatsights" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml via poem serde_yaml; no YAML parsing" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+  "MIT-0",
+  "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA list) via rustls
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

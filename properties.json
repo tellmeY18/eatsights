@@ -1,0 +1,1173 @@
+{
+  "registry_version": "0.3",
+  "note": "Each entry validates against property.schema.json. Half-lives are starting guesses to be tuned on real data.",
+  "properties": [
+    {
+      "id": "listing.status",
+      "scope": "menu_item",
+      "label": {
+        "en": "Listed on menu"
+      },
+      "description": "Whether the item is on this place's menu at all, regardless of whether it is available right now.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "listed",
+              "delisted",
+              "seasonal"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 720,
+      "writers": [
+        "customer",
+        "vendor",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "price.amount",
+      "scope": "menu_item",
+      "label": {
+        "en": "Price"
+      },
+      "description": "What it costs, in minor units (paise). Fulfilment keeps dine-in, takeaway and delivery prices apart.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "amount_minor",
+          "currency",
+          "fulfilment"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "fulfilment": {
+            "enum": [
+              "dine_in",
+              "takeaway",
+              "delivery"
+            ]
+          },
+          "tax_included": {
+            "type": "boolean"
+          },
+          "valid_during": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "OSM opening_hours syntax, for time-based pricing."
+          }
+        }
+      },
+      "unit": "paise",
+      "half_life_hours": 1440,
+      "writers": [
+        "customer",
+        "vendor",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "price.packaging_charge",
+      "scope": "menu_item",
+      "label": {
+        "en": "Packaging charge"
+      },
+      "description": "Extra charge for takeaway packaging, in minor units.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "amount_minor",
+          "currency"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "amount_minor": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          }
+        }
+      },
+      "unit": "paise",
+      "half_life_hours": 1440,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "serving.quantity",
+      "scope": "menu_item",
+      "label": {
+        "en": "Serving quantity"
+      },
+      "description": "How much you get: volume, weight or piece count.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "unit": {
+            "enum": [
+              "ml",
+              "g",
+              "piece",
+              "plate",
+              "cup",
+              "glass",
+              "serving"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "value",
+        "window": 10
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "serving.temperature",
+      "scope": "menu_item",
+      "label": {
+        "en": "Served temperature"
+      },
+      "description": "How hot or cold it is served.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "hot",
+              "warm",
+              "room",
+              "cold",
+              "iced"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "mode"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "serving.container",
+      "scope": "menu_item",
+      "label": {
+        "en": "Served in"
+      },
+      "description": "Vessel or wrapping the item comes in.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "glass",
+              "steel_glass",
+              "paper_cup",
+              "clay_cup",
+              "plate",
+              "banana_leaf",
+              "bowl",
+              "box",
+              "bottle",
+              "other"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 4320,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "mode"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "composition.milk",
+      "scope": "menu_item",
+      "label": {
+        "en": "Milk"
+      },
+      "description": "Milk used in the preparation, if any.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "enum": [
+              "none",
+              "cow",
+              "buffalo",
+              "condensed",
+              "powdered",
+              "plant"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "mode"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "composition.sweetness",
+      "scope": "menu_item",
+      "label": {
+        "en": "Default sweetness"
+      },
+      "description": "How sweet it comes by default, on a 0 (none) to 4 (very sweet) scale.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "level"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "level",
+        "window": 10
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "includes.items",
+      "scope": "menu_item",
+      "label": {
+        "en": "What is included"
+      },
+      "description": "Items that come with it at no extra charge.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "rice",
+                "sambar",
+                "curry",
+                "pickle",
+                "papad",
+                "chutney",
+                "salad",
+                "buttermilk",
+                "dessert",
+                "unlimited_refill",
+                "side_dish",
+                "water",
+                "other"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "customisation.options",
+      "scope": "menu_item",
+      "label": {
+        "en": "Customisation options"
+      },
+      "description": "Changes the place will make on request.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "options"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "no_sugar",
+                "less_sugar",
+                "extra_sugar",
+                "no_milk",
+                "less_milk",
+                "extra_milk",
+                "extra_strong",
+                "light",
+                "add_ginger",
+                "add_cardamom",
+                "extra_spicy",
+                "less_spicy",
+                "no_onion",
+                "other"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "quality.score",
+      "scope": "menu_item",
+      "label": {
+        "en": "Quality"
+      },
+      "description": "Structured quality rating. No free text, by design.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "score"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "worth_price": {
+            "type": "boolean"
+          }
+        }
+      },
+      "half_life_hours": 1080,
+      "writers": [
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "score",
+        "window": 15
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "prep.wait_time",
+      "scope": "menu_item",
+      "label": {
+        "en": "Wait time"
+      },
+      "description": "Seconds from ordering to being ready or served.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "seconds",
+          "stage"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 14400
+          },
+          "stage": {
+            "enum": [
+              "order_to_ready",
+              "queue_only",
+              "order_to_served"
+            ]
+          }
+        }
+      },
+      "unit": "seconds",
+      "half_life_hours": 6,
+      "writers": [
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "seconds",
+        "window": 10
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "availability.declared_schedule",
+      "scope": "menu_item",
+      "label": {
+        "en": "Declared availability"
+      },
+      "description": "When the vendor says the item is served, in OSM opening_hours syntax (days, hours, holidays, seasons).",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "rule"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "half_life_hours": 4320,
+      "writers": [
+        "vendor",
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "schedule"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "availability.observed",
+      "scope": "menu_item",
+      "label": {
+        "en": "Observed availability"
+      },
+      "description": "Whether the item was actually available when someone looked.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "available",
+              "sold_out",
+              "not_served_today"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 2,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "availability.sold_out_time",
+      "scope": "menu_item",
+      "label": {
+        "en": "Time it sold out"
+      },
+      "description": "Local time of day the item ran out, so a typical sell-out time can be derived.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "local_time",
+          "day_type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "local_time": {
+            "type": "string",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+          },
+          "day_type": {
+            "enum": [
+              "weekday",
+              "weekend",
+              "holiday"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 336,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "local_time",
+        "window": 10
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "availability.declared_reliability",
+      "scope": "menu_item",
+      "label": {
+        "en": "Declared availability reliability"
+      },
+      "description": "How often observed availability matched the vendor's declared schedule. Computed, never submitted.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "score",
+          "sample_days"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sample_days": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "half_life_hours": 720,
+      "writers": [
+        "system"
+      ],
+      "aggregation": {
+        "strategy": "derived"
+      },
+      "derived_from": [
+        "availability.declared_schedule",
+        "availability.observed"
+      ],
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "hours.declared",
+      "scope": "place",
+      "label": {
+        "en": "Declared opening hours"
+      },
+      "description": "Opening hours as stated by the vendor, in OSM opening_hours syntax.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "rule"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "maxLength": 500
+          }
+        }
+      },
+      "half_life_hours": 720,
+      "writers": [
+        "vendor",
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "schedule"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "hours.observed_open",
+      "scope": "place",
+      "label": {
+        "en": "Observed open or closed"
+      },
+      "description": "Whether the place was open when someone arrived.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "open_now",
+              "closed_now"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 2,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "status.operating",
+      "scope": "place",
+      "label": {
+        "en": "Operating status"
+      },
+      "description": "Whether the place still exists and trades.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "enum": [
+              "active",
+              "temporarily_closed",
+              "permanently_closed"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 720,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "payment.methods",
+      "scope": "place",
+      "label": {
+        "en": "Payment methods"
+      },
+      "description": "Accepted ways to pay.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "methods"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "methods": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "cash",
+                "upi",
+                "card",
+                "wallet"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 2160,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "seating.kind",
+      "scope": "place",
+      "label": {
+        "en": "Seating"
+      },
+      "description": "Where and how you can eat.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "kinds"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "standing",
+                "bench",
+                "table",
+                "air_conditioned",
+                "family_section",
+                "takeaway_only",
+                "outdoor"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 4320,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "facilities.features",
+      "scope": "place",
+      "label": {
+        "en": "Facilities"
+      },
+      "description": "On-site facilities.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "features"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "features": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "restroom",
+                "parking",
+                "wifi",
+                "handwash",
+                "drinking_water",
+                "charging_points",
+                "wheelchair_access",
+                "other"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 4320,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "proposed",
+      "since": "0.2"
+    },
+    {
+      "id": "hygiene.score",
+      "scope": "place",
+      "label": {
+        "en": "Cleanliness"
+      },
+      "description": "Structured cleanliness rating.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "score"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          }
+        }
+      },
+      "half_life_hours": 1080,
+      "writers": [
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "score",
+        "window": 15
+      },
+      "status": "proposed",
+      "since": "0.2"
+    },
+    {
+      "id": "queue.length",
+      "scope": "place",
+      "label": {
+        "en": "Queue length"
+      },
+      "description": "Roughly how many people are waiting right now.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "bucket"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "bucket": {
+            "enum": [
+              "none",
+              "1_to_3",
+              "4_to_10",
+              "over_10"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 0.5,
+      "writers": [
+        "customer"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "proposed",
+      "since": "0.2"
+    },
+    {
+      "id": "dish.diet",
+      "scope": "dish",
+      "label": {
+        "en": "Diet type"
+      },
+      "description": "Vegetarian, egg, non-vegetarian or vegan.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "diet"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "diet": {
+            "enum": [
+              "veg",
+              "egg",
+              "non_veg",
+              "vegan"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 8760,
+      "writers": [
+        "customer",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "dish.ingredients",
+      "scope": "dish",
+      "label": {
+        "en": "Typical ingredients"
+      },
+      "description": "Slugs or Wikidata QIDs of typical ingredients.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^([a-z][a-z0-9_]*|Q[0-9]+)$"
+            }
+          }
+        }
+      },
+      "half_life_hours": 8760,
+      "writers": [
+        "customer",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "dish.allergens",
+      "scope": "dish",
+      "label": {
+        "en": "Common allergens"
+      },
+      "description": "Allergens commonly present in the dish.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "allergens"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "allergens": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "milk",
+                "gluten",
+                "peanut",
+                "tree_nut",
+                "soy",
+                "egg",
+                "fish",
+                "shellfish",
+                "sesame",
+                "mustard"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 8760,
+      "writers": [
+        "customer",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "dish.typical_serving",
+      "scope": "dish",
+      "label": {
+        "en": "Typical serving"
+      },
+      "description": "A normal serving size across places, for comparison.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "unit": {
+            "enum": [
+              "ml",
+              "g",
+              "piece",
+              "plate",
+              "cup",
+              "glass",
+              "serving"
+            ]
+          }
+        }
+      },
+      "half_life_hours": 8760,
+      "writers": [
+        "customer",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "median",
+        "field": "value",
+        "window": 20
+      },
+      "status": "accepted",
+      "since": "0.2"
+    },
+    {
+      "id": "dish.origin",
+      "scope": "dish",
+      "label": {
+        "en": "Region of origin"
+      },
+      "description": "Wikidata QID of the region the dish comes from.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "wikidata"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "wikidata": {
+            "type": "string",
+            "pattern": "^Q[0-9]+$"
+          }
+        }
+      },
+      "half_life_hours": 8760,
+      "writers": [
+        "customer",
+        "import"
+      ],
+      "aggregation": {
+        "strategy": "latest_weighted"
+      },
+      "status": "proposed",
+      "since": "0.2"
+    },
+    {
+      "id": "availability.meal_times",
+      "scope": "menu_item",
+      "label": {
+        "en": "Meal times"
+      },
+      "description": "Coarse part of the day the item is served, for vendors who say 'mornings' without exact hours. When an exact declared schedule exists, it takes precedence.",
+      "value_schema": {
+        "type": "object",
+        "required": [
+          "times"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "times": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "breakfast",
+                "lunch",
+                "evening_snacks",
+                "dinner",
+                "late_night"
+              ]
+            }
+          }
+        }
+      },
+      "half_life_hours": 4320,
+      "writers": [
+        "customer",
+        "vendor"
+      ],
+      "aggregation": {
+        "strategy": "union"
+      },
+      "status": "proposed",
+      "since": "0.3"
+    }
+  ]
+}

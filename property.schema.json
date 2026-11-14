@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eatsights.letsimpl.fyi/schema/v0.3/property.schema.json",
+  "title": "Property definition",
+  "description": "One entry in the property registry. Anyone can propose a property by opening a PR that adds an entry with status 'proposed'. Adding properties never changes the core schema.",
+  "type": "object",
+  "required": ["id", "scope", "label", "description", "value_schema", "half_life_hours", "writers", "aggregation", "status", "since"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
+    "scope": { "enum": ["place", "menu_item", "dish"] },
+    "label": { "type": "object", "required": ["en"], "additionalProperties": { "type": "string" } },
+    "description": { "type": "string", "maxLength": 400 },
+    "value_schema": { "type": "object", "description": "A JSON Schema (2020-12) that a value must satisfy." },
+    "unit": { "type": "string", "description": "Human-readable unit for display, if the value has one." },
+    "half_life_hours": { "type": "number", "exclusiveMinimum": 0, "description": "How fast the fact goes stale." },
+    "writers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "enum": ["customer", "vendor", "import", "system"] },
+      "description": "Who may submit observations. ['system'] alone means derived-only: clients may not write it."
+    },
+    "aggregation": {
+      "type": "object",
+      "required": ["strategy"],
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "enum": ["latest_weighted", "median", "mode", "union", "schedule", "derived"],
+          "description": "latest_weighted: highest weighted support wins. median: numeric field. mode: most common value. union: merge set values. schedule: newest declared rule wins. derived: computed from other properties."
+        },
+        "field": { "type": "string", "description": "For median: the numeric field inside the value." },
+        "window": { "type": "integer", "minimum": 1, "description": "For median: how many recent observations to use." }
+      }
+    },
+    "derived_from": { "type": "array", "items": { "type": "string" }, "description": "For strategy 'derived': input property IDs." },
+    "status": { "enum": ["proposed", "accepted", "deprecated"] },
+    "since": { "type": "string", "description": "Schema version in which the property appeared." },
+    "replaced_by": { "type": "string" },
+    "proposed_by": { "type": "string", "description": "Optional public handle. Not required." }
+  }
+}

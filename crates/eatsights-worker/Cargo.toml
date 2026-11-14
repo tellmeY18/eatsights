@@ -1,0 +1,23 @@
+[package]
+name = "eatsights-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+eatsights-core = { path = "../eatsights-core" }
+eatsights-db = { path = "../eatsights-db" }
+tokio = { version = "1", features = ["time", "sync", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"

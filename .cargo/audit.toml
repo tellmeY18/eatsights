@@ -1,0 +1,9 @@
+# Keep in sync with deny.toml [advisories].ignore.
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0194", # quick-xml via poem; Eatsights parses no XML
+  "RUSTSEC-2026-0195", # quick-xml via poem; Eatsights parses no XML
+  "RUSTSEC-2024-0449", # unsafe-libyaml via poem; Eatsights parses no YAML
+  "RUSTSEC-2026-0459", # libsqlite3-sys: in Cargo.lock via sqlx optional drivers, not compiled (`cargo tree -i libsqlite3-sys` is empty)
+  "RUSTSEC-2023-0071", # rsa: in Cargo.lock via sqlx-mysql, not compiled (`cargo tree -i rsa` is empty)
+]

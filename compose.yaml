@@ -1,0 +1,40 @@
+# Local Postgres for contributors without Nix. `docker compose up -d db`
+# Optional app: `docker compose --profile app up --build`
+services:
+  db:
+    image: postgis/postgis:18-3.6 # PG18 + PostGIS; pg_trgm and unaccent ship with contrib
+    environment:
+      POSTGRES_USER: eatsights
+      POSTGRES_DB: eatsights
+      POSTGRES_HOST_AUTH_METHOD: trust # local development only
+    command: ["postgres", "-c", "shared_buffers=128MB"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eatsights -d eatsights"]
+      interval: 2s
+      retries: 30
+
+  eatsights:
+    profiles: ["app"]
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://eatsights@db:5432/eatsights
+      EATSIGHTS_LISTEN: 0.0.0.0:8080
+      EATSIGHTS_BASE_URL: http://localhost:8080
+      EATSIGHTS_DB_POOL: "8"
+      EATSIGHTS_PSEUDONYM_SALT: dev-only-salt-change-me-0123456789abcdef
+      EATSIGHTS_PSEUDONYM_SALT_VERSION: "1"
+      EATSIGHTS_ROOT_PUBLIC_KEY: ${EATSIGHTS_ROOT_PUBLIC_KEY:?run `eatsights keygen` and export the public key}
+      TOKIO_WORKER_THREADS: "1"
+    ports:
+      - "8080:8080"
+    command: ["serve", "--roles", "api,worker"]
+
+volumes:
+  pgdata:

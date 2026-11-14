@@ -1,0 +1,366 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eatsights.letsimpl.fyi/schema/v0.3/schema.json",
+  "title": "Eatsights Schema (draft v0.3)",
+  "description": "Entities are stable. Observations are append-only and name a property from the public registry. Facts are derived. Data licence: CC0 1.0. External data (OSM, Wikidata) is linked by ID, never copied. Observations exist in two forms: a private signed submission and a public observation without raw keys.",
+  "$defs": {
+    "ids": {
+      "place_id": { "type": "string", "pattern": "^pl_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "section_id": { "type": "string", "pattern": "^sc_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "menu_item_id": { "type": "string", "pattern": "^mi_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "dish_id": { "type": "string", "pattern": "^di_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "observation_id": { "type": "string", "pattern": "^ob_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "attestation_id": { "type": "string", "pattern": "^at_[0-9A-HJKMNP-TV-Z]{26}$" },
+      "key_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22,64}$", "description": "Fingerprint of an Ed25519 public key." },
+      "property_id": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+        "description": "Namespaced registry ID, e.g. price.amount. Must exist in properties.json."
+      }
+    },
+
+    "lang_map": {
+      "description": "BCP-47 tag -> text. Use 'ml' for Malayalam and 'ml-Latn' for Manglish transliteration.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]+)*$" },
+      "additionalProperties": { "type": "string", "maxLength": 120 }
+    },
+
+    "link": {
+      "description": "A pointer to external data. Only the ID is stored.",
+      "type": "object",
+      "required": ["id", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "status": { "enum": ["verified", "unverified", "broken"] },
+        "verified_at": { "type": "string", "format": "date" }
+      }
+    },
+
+    "osm_link": {
+      "description": "Where this place stands relative to OpenStreetMap. 'unmapped' means someone searched and found nothing; 'unchecked' means nobody has searched yet.",
+      "type": "object",
+      "required": ["state"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "enum": ["unchecked", "unmapped", "candidate", "linked"] },
+        "id": { "type": "string", "pattern": "^(node|way|relation)/[0-9]+$" },
+        "checked_at": { "type": "string", "format": "date-time", "description": "When OSM was last searched around this place." },
+        "verified_at": { "type": "string", "format": "date" },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^(node|way|relation)/[0-9]+$" },
+              "distance_m": { "type": "number", "minimum": 0 },
+              "name_score": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        },
+        "ready_to_map": {
+          "type": "boolean",
+          "description": "Set by the system when the place is unmapped, has a name, category and pin, and its existence is confirmed by independent contributors. Marks it for the OSM export queue."
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "state": { "const": "linked" } }, "required": ["state"] },
+          "then": { "required": ["id", "verified_at"] } },
+        { "if": { "properties": { "state": { "const": "unmapped" } }, "required": ["state"] },
+          "then": { "required": ["checked_at"], "not": { "required": ["id"] } } },
+        { "if": { "properties": { "state": { "const": "candidate" } }, "required": ["state"] },
+          "then": { "required": ["candidates"], "properties": { "candidates": { "minItems": 1 } } } },
+        { "if": { "properties": { "state": { "const": "unchecked" } }, "required": ["state"] },
+          "then": { "not": { "required": ["id"] } } }
+      ]
+    },
+
+    "place": {
+      "description": "The root entity. Has its own ID. OSM is an optional parent link, not the identity. Vendor ownership is derived from vendor_of attestations, not stored here.",
+      "type": "object",
+      "required": ["id", "names", "category", "location", "city", "osm", "record_state", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/place_id" },
+        "names": { "$ref": "#/$defs/lang_map" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/lang_map" } },
+        "category": {
+          "enum": ["tea_stall", "canteen", "small_hotel", "restaurant", "bakery",
+                   "juice_shop", "street_cart", "office_counter", "cafe", "other"]
+        },
+        "location": {
+          "description": "Location of the PLACE only, set by dropping a pin. Never a trail of contributor positions.",
+          "type": "object",
+          "required": ["lat", "lng"],
+          "additionalProperties": false,
+          "properties": {
+            "lat": { "type": "number", "minimum": -90, "maximum": 90 },
+            "lng": { "type": "number", "minimum": -180, "maximum": 180 },
+            "precision_m": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "city": { "type": "string", "description": "Slug, e.g. ernakulam" },
+        "admin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "state": { "type": "string" },
+            "district": { "type": "string" },
+            "local_body_code": { "type": "string" },
+            "ward": { "type": "string" }
+          }
+        },
+        "osm": { "$ref": "#/$defs/osm_link" },
+        "wikidata": { "$ref": "#/$defs/link" },
+        "record_state": { "enum": ["active", "merged"] },
+        "merged_into": { "$ref": "#/$defs/ids/place_id", "description": "Survivor of a merge. The old ID stays forever and redirects." },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "allOf": [
+        { "if": { "properties": { "record_state": { "const": "merged" } }, "required": ["record_state"] },
+          "then": { "required": ["merged_into"] },
+          "else": { "not": { "required": ["merged_into"] } } }
+      ]
+    },
+
+    "section": {
+      "description": "A grouping inside a place (drinks, snacks, bar). Nestable. There is no separate menu entity; a place's sections are its menu.",
+      "type": "object",
+      "required": ["id", "place_id", "labels"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/section_id" },
+        "place_id": { "$ref": "#/$defs/ids/place_id" },
+        "parent_section_id": { "$ref": "#/$defs/ids/section_id" },
+        "labels": { "$ref": "#/$defs/lang_map" },
+        "kind": { "enum": ["drinks", "starters", "snacks", "mains", "breakfast", "meals", "desserts", "sides", "combos", "other"] },
+        "sort": { "type": "integer" }
+      }
+    },
+
+    "dish": {
+      "description": "Canonical concept shared across places. Dish-level facts are observations with dish scope.",
+      "type": "object",
+      "required": ["id", "labels"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/dish_id" },
+        "labels": { "$ref": "#/$defs/lang_map" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/lang_map" } },
+        "kind": { "enum": ["dish", "beverage", "snack", "sweet", "packaged", "other"] },
+        "wikidata": { "$ref": "#/$defs/link", "description": "Hub for Wikipedia and Commons. Derive those at read time; never store them." }
+      }
+    },
+
+    "menu_item": {
+      "description": "A dish (or variant) as sold at one place. A thali or combo is ONE menu item, with includes.items listing what comes with it. Timing is a property, not a parent.",
+      "type": "object",
+      "required": ["id", "place_id", "labels", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/menu_item_id" },
+        "place_id": { "$ref": "#/$defs/ids/place_id" },
+        "section_id": { "$ref": "#/$defs/ids/section_id" },
+        "dish_id": { "$ref": "#/$defs/ids/dish_id" },
+        "labels": { "$ref": "#/$defs/lang_map" },
+        "variant": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "size": { "enum": ["small", "regular", "large", "half", "full"] },
+            "label": { "$ref": "#/$defs/lang_map" }
+          }
+        },
+        "record_state": { "enum": ["active", "merged"], "default": "active" },
+        "merged_into": { "$ref": "#/$defs/ids/menu_item_id" },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "subject": {
+      "description": "What the observation is about. The registry property's scope must equal subject.scope.",
+      "oneOf": [
+        { "type": "object", "required": ["scope", "place_id"], "additionalProperties": false,
+          "properties": { "scope": { "const": "place" }, "place_id": { "$ref": "#/$defs/ids/place_id" } } },
+        { "type": "object", "required": ["scope", "place_id", "menu_item_id"], "additionalProperties": false,
+          "properties": { "scope": { "const": "menu_item" }, "place_id": { "$ref": "#/$defs/ids/place_id" },
+                          "menu_item_id": { "$ref": "#/$defs/ids/menu_item_id" } } },
+        { "type": "object", "required": ["scope", "dish_id"], "additionalProperties": false,
+          "properties": { "scope": { "const": "dish" }, "dish_id": { "$ref": "#/$defs/ids/dish_id" } } }
+      ]
+    },
+
+    "observation_core": {
+      "description": "Fields shared by the private submission and the public observation. Not used on its own.",
+      "type": "object",
+      "required": ["id", "schema_version", "kind", "property", "subject",
+                   "observed_at", "submitted_at", "method", "source_type", "license"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/observation_id" },
+        "schema_version": { "const": "0.3" },
+        "kind": { "enum": ["value", "confirm", "dispute"] },
+        "property": { "$ref": "#/$defs/ids/property_id" },
+        "subject": { "$ref": "#/$defs/subject" },
+        "value": { "description": "Shape defined by the registry property's value_schema. Absent on confirm." },
+        "refers_to": { "$ref": "#/$defs/ids/observation_id" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "submitted_at": { "type": "string", "format": "date-time" },
+        "method": { "enum": ["order_flow", "receipt", "menu_photo", "in_person", "vendor_declared", "import"] },
+        "source_type": { "enum": ["customer", "vendor", "import"] },
+        "prompt_type": { "enum": ["one_tap", "blind", "unprompted"] },
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "app_id": { "type": "string", "maxLength": 64 },
+            "app_version": { "type": "string", "maxLength": 32 }
+          }
+        },
+        "license": { "const": "CC0-1.0" }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "value" } }, "required": ["kind"] },
+          "then": { "required": ["value"], "not": { "required": ["refers_to"] } } },
+        { "if": { "properties": { "kind": { "const": "confirm" } }, "required": ["kind"] },
+          "then": { "required": ["refers_to"], "not": { "required": ["value"] } } },
+        { "if": { "properties": { "kind": { "const": "dispute" } }, "required": ["kind"] },
+          "then": { "required": ["refers_to"] } },
+        { "if": { "properties": { "method": { "const": "vendor_declared" } }, "required": ["method"] },
+          "then": { "properties": { "source_type": { "const": "vendor" } } } }
+      ]
+    },
+
+    "submission": {
+      "description": "PRIVATE. What a client sends to the write API. Carries the raw key and a signature over the canonical JSON of the other fields. Stored on the write side only; never published.",
+      "allOf": [ { "$ref": "#/$defs/observation_core" } ],
+      "type": "object",
+      "required": ["contributor", "signature"],
+      "properties": {
+        "contributor": {
+          "type": "object",
+          "required": ["key_id"],
+          "additionalProperties": false,
+          "properties": {
+            "key_id": { "$ref": "#/$defs/ids/key_id" },
+            "checkin_verified": { "type": "boolean", "description": "Device confirmed a check-in at this place. Coordinates never leave the device." }
+          }
+        },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$", "description": "Ed25519 signature, base64url without padding." }
+      },
+      "unevaluatedProperties": false
+    },
+
+    "observation": {
+      "description": "PUBLISHED. Same facts as the submission, minus the raw key and signature. The pseudonym is HMAC(secret_salt, key_id + anchor), where anchor is place_id for place and menu_item scope, or dish_id for dish scope. It lets consumers count distinct contributors per place without linking one person's activity across places.",
+      "allOf": [ { "$ref": "#/$defs/observation_core" } ],
+      "type": "object",
+      "required": ["contributor"],
+      "properties": {
+        "contributor": {
+          "type": "object",
+          "required": ["class", "pseudonym"],
+          "additionalProperties": false,
+          "properties": {
+            "class": { "enum": ["unverified", "member", "trusted", "verifier", "vendor", "import"] },
+            "pseudonym": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22}$" },
+            "checkin_verified": { "type": "boolean" }
+          }
+        }
+      },
+      "unevaluatedProperties": false
+    },
+
+    "key": {
+      "description": "PRIVATE (write side), except verifier and root keys, which are published. One record per device key.",
+      "type": "object",
+      "required": ["key_id", "algorithm", "public_key", "created_at", "status", "level", "depth"],
+      "additionalProperties": false,
+      "properties": {
+        "key_id": { "$ref": "#/$defs/ids/key_id" },
+        "algorithm": { "const": "ed25519" },
+        "public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "status": { "enum": ["active", "revoked", "rotated"] },
+        "level": { "enum": ["unverified", "member", "trusted", "verifier", "root"] },
+        "depth": { "type": "integer", "minimum": 0, "description": "Steps from the root key. 0 = root. Maintained by the system." },
+        "successor_key_id": { "$ref": "#/$defs/ids/key_id", "description": "Set when status is rotated (new phone)." }
+      }
+    },
+
+    "attestation": {
+      "description": "A signed statement by one key about another. vouch: grants a trust level. vendor_of: binds a key to one place (public). revoke: cancels an earlier attestation. rotate: old key vouches for its replacement. Vouch, revoke and rotate are private; vendor_of is public.",
+      "type": "object",
+      "required": ["id", "type", "issuer_key_id", "subject_key_id", "issued_at", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/ids/attestation_id" },
+        "type": { "enum": ["vouch", "vendor_of", "revoke", "rotate"] },
+        "issuer_key_id": { "$ref": "#/$defs/ids/key_id" },
+        "subject_key_id": { "$ref": "#/$defs/ids/key_id" },
+        "level_granted": { "enum": ["member", "trusted", "verifier"] },
+        "place_id": { "$ref": "#/$defs/ids/place_id" },
+        "revokes": { "$ref": "#/$defs/ids/attestation_id" },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "vouch" } }, "required": ["type"] },
+          "then": { "required": ["level_granted"] } },
+        { "if": { "properties": { "type": { "const": "vendor_of" } }, "required": ["type"] },
+          "then": { "required": ["place_id"] } },
+        { "if": { "properties": { "type": { "const": "revoke" } }, "required": ["type"] },
+          "then": { "required": ["revokes"] } }
+      ]
+    },
+
+    "fact": {
+      "description": "DERIVED by the aggregation job. Never written by clients.",
+      "type": "object",
+      "required": ["subject", "property", "status", "confidence", "counts", "last_observed_at", "half_life_hours", "computed_at"],
+      "additionalProperties": false,
+      "properties": {
+        "subject": { "$ref": "#/$defs/subject" },
+        "property": { "$ref": "#/$defs/ids/property_id" },
+        "current_value": {},
+        "status": { "enum": ["confirmed", "unconfirmed", "contested", "stale"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "counts": {
+          "type": "object",
+          "required": ["confirmations", "disputes", "distinct_contributors"],
+          "additionalProperties": false,
+          "properties": {
+            "confirmations": { "type": "integer", "minimum": 0 },
+            "disputes": { "type": "integer", "minimum": 0 },
+            "distinct_contributors": { "type": "integer", "minimum": 0 },
+            "trusted_confirmations": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "sources": { "type": "array", "items": { "enum": ["customer", "vendor", "import", "system"] } },
+        "vendor_value_differs": { "type": "boolean" },
+        "last_observed_at": { "type": "string", "format": "date-time" },
+        "last_confirmed_at": { "type": "string", "format": "date-time" },
+        "half_life_hours": { "type": "number", "exclusiveMinimum": 0 },
+        "basis": { "type": "array", "items": { "$ref": "#/$defs/ids/observation_id" } },
+        "computed_at": { "type": "string", "format": "date-time" },
+        "algorithm_version": { "type": "string" }
+      }
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/place" },
+    { "$ref": "#/$defs/section" },
+    { "$ref": "#/$defs/dish" },
+    { "$ref": "#/$defs/menu_item" },
+    { "$ref": "#/$defs/submission" },
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/key" },
+    { "$ref": "#/$defs/attestation" },
+    { "$ref": "#/$defs/fact" }
+  ]
+}
