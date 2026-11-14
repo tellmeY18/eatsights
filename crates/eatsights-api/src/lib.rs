@@ -180,6 +180,23 @@ pub fn app(state: Arc<AppState>) -> impl Endpoint {
                 Ok(resp)
             }
         })
+        .with(cors())
+}
+
+/// Any origin may call the API: it is public, reads carry no credentials and writes are
+/// authenticated by their Ed25519 signature, never by cookies (so no allow-credentials).
+fn cors() -> poem::middleware::Cors {
+    poem::middleware::Cors::new()
+        .allow_methods([
+            poem::http::Method::GET,
+            poem::http::Method::HEAD,
+            poem::http::Method::POST,
+            poem::http::Method::OPTIONS,
+        ])
+        .allow_headers(["content-type", "if-none-match", "accept"])
+        .expose_headers(["etag", "cache-control", "location"])
+        .allow_credentials(false)
+        .max_age(86400)
 }
 
 /// Keep `seq` at the latest `public.changes.seq`: LISTEN on `eatsights_changes`,

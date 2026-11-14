@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eatsights_worker::export::{Manifest, latest_manifest, valid_snapshot_name};
+use eatsights_worker::export::{Manifest, latest_manifest, snapshot_manifest, valid_snapshot_name};
 use poem::web::Data;
 use poem::{Body, IntoResponse, Request};
 use poem_openapi::param::Path;
@@ -18,8 +18,12 @@ use crate::problem::ProblemResp;
 use crate::reads::{ApiTags, RawJson};
 use crate::state::AppState;
 
-const FILE_CACHE: &str =
-    "public, max-age=3600, stale-while-revalidate=86400, stale-if-error=604800";
+/// `/v1/export/{snapshot}/{name}`: a snapshot never changes once written.
+const SNAPSHOT_FILE_CACHE: &str = "public, max-age=31536000, immutable";
+/// `/v1/export/{name}` follows `latest`, so it may change at any time: keep it short so a
+/// CDN never pairs a fresh manifest with an old file.
+const LATEST_FILE_CACHE: &str =
+    "public, max-age=60, stale-while-revalidate=300, stale-if-error=604800";
 const LIST_CACHE: &str = "public, max-age=300, stale-while-revalidate=3600, stale-if-error=604800";
 
 /// A gzip-compressed NDJSON file (one JSON document per line).
@@ -134,7 +138,7 @@ impl ExportApi {
             .map(|f| {
                 json!({
                     "name": f.name, "bytes": f.bytes, "sha256": f.sha256, "records": f.records,
-                    "url": format!("{base}/v1/export/{}", f.name),
+                    "url": format!("{base}/v1/export/{}/{}", m.snapshot, f.name),
                 })
             })
             .collect();
@@ -170,28 +174,65 @@ impl ExportApi {
     ) -> Result<ExportFileResp, ProblemResp> {
         let dir = st.cfg.export_dir.clone();
         let m = manifest(dir.clone()).await?;
-        let wanted = name.0;
-        let Some(f) = m
-            .files
-            .iter()
-            .find(|f| f.name == wanted || f.name == format!("{wanted}.ndjson.gz"))
-            .filter(|f| safe_file_name(&f.name) && valid_snapshot_name(&m.snapshot))
-        else {
-            return Err(ProblemResp::not_found("export file"));
-        };
-        let etag = format!("\"{}\"", f.sha256);
-        if not_modified(req, &etag) {
-            return Ok(ExportFileResp::NotModified(etag, FILE_CACHE.into()));
-        }
-        let path = dir.join(&m.snapshot).join(&f.name);
-        let file = tokio::fs::File::open(&path)
-            .await
-            .map_err(|_| ProblemResp::not_found("export file"))?;
-        Ok(ExportFileResp::Ok(
-            GzipFile(Body::from_async_read(file)),
-            etag,
-            FILE_CACHE.into(),
-            format!("attachment; filename=\"{}\"", f.name),
-        ))
+        serve_file(req, dir, &m, &name.0, LATEST_FILE_CACHE).await
     }
+
+    /// One file of a specific snapshot, as linked from the manifest (`files[].url`).
+    /// Immutable: cache it forever. Returns 404 once the snapshot is pruned (the newest
+    /// few are kept); start again from `GET /v1/export`.
+    #[oai(
+        path = "/export/:snapshot/:name",
+        method = "get",
+        tag = "ApiTags::Feed",
+        operation_id = "export_snapshot_file"
+    )]
+    async fn snapshot_file(
+        &self,
+        st: Data<&Arc<AppState>>,
+        req: &Request,
+        snapshot: Path<String>,
+        name: Path<String>,
+    ) -> Result<ExportFileResp, ProblemResp> {
+        let dir = st.cfg.export_dir.clone();
+        let snap = snapshot.0;
+        let m = tokio::task::spawn_blocking({
+            let dir = dir.clone();
+            move || snapshot_manifest(&dir, &snap)
+        })
+        .await
+        .map_err(ProblemResp::internal)?
+        .ok_or_else(|| ProblemResp::not_found("export snapshot"))?;
+        serve_file(req, dir, &m, &name.0, SNAPSHOT_FILE_CACHE).await
+    }
+}
+
+async fn serve_file(
+    req: &Request,
+    dir: PathBuf,
+    m: &Manifest,
+    wanted: &str,
+    cache: &str,
+) -> Result<ExportFileResp, ProblemResp> {
+    let Some(f) = m
+        .files
+        .iter()
+        .find(|f| f.name == wanted || f.name == format!("{wanted}.ndjson.gz"))
+        .filter(|f| safe_file_name(&f.name) && valid_snapshot_name(&m.snapshot))
+    else {
+        return Err(ProblemResp::not_found("export file"));
+    };
+    let etag = format!("\"{}\"", f.sha256);
+    if not_modified(req, &etag) {
+        return Ok(ExportFileResp::NotModified(etag, cache.into()));
+    }
+    let path = dir.join(&m.snapshot).join(&f.name);
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| ProblemResp::not_found("export file"))?;
+    Ok(ExportFileResp::Ok(
+        GzipFile(Body::from_async_read(file)),
+        etag,
+        cache.into(),
+        format!("attachment; filename=\"{}\"", f.name),
+    ))
 }

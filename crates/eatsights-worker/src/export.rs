@@ -91,7 +91,11 @@ pub fn valid_snapshot_name(s: &str) -> bool {
 /// The latest snapshot's manifest, if any.
 pub fn latest_manifest(dir: &Path) -> Option<Manifest> {
     let name = std::fs::read_to_string(dir.join(LATEST)).ok()?;
-    let name = name.trim();
+    snapshot_manifest(dir, name.trim())
+}
+
+/// The manifest of one retained snapshot, if it exists.
+pub fn snapshot_manifest(dir: &Path, name: &str) -> Option<Manifest> {
     if !valid_snapshot_name(name) {
         return None;
     }

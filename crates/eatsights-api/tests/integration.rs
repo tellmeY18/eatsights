@@ -1027,6 +1027,41 @@ async fn exports_are_public_consistent_and_served() {
             .await
             .assert_status(poem::http::StatusCode::NOT_FOUND);
     }
+
+    // The manifest links snapshot-pinned, immutable URLs, so a CDN can never pair a fresh
+    // manifest with a file from an older snapshot.
+    let url = v["files"][0]["url"].as_str().unwrap();
+    let pinned = format!(
+        "/v1/export/{}/{}",
+        m.snapshot,
+        v["files"][0]["name"].as_str().unwrap()
+    );
+    assert!(url.ends_with(&pinned), "{url}");
+    let r = cli.get(&pinned).send().await;
+    r.assert_status_is_ok();
+    assert!(
+        r.0.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    let latest_cc = cli.get("/v1/export/places").send().await;
+    assert!(
+        !latest_cc.0.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    for bad in [
+        format!("/v1/export/{}/manifest.json", m.snapshot),
+        format!("/v1/export/..%2F{}/places", m.snapshot),
+        "/v1/export/20000101T000000000000000Z-1/places".to_owned(),
+    ] {
+        cli.get(&bad)
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
     let _ = std::fs::remove_dir_all(&dir);
     w.t.drop().await;
 }

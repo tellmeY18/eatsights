@@ -1776,6 +1776,102 @@
         "operationId": "export"
       }
     },
+    "/v1/export/{snapshot}/{name}": {
+      "get": {
+        "tags": [
+          "Feed"
+        ],
+        "summary": "One file of a specific snapshot, as linked from the manifest (`files[].url`).\nImmutable: cache it forever. Returns 404 once the snapshot is pruned (the newest\nfew are kept); start again from `GET /v1/export`.",
+        "parameters": [
+          {
+            "name": "snapshot",
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "required": true,
+            "deprecated": false,
+            "explode": true
+          },
+          {
+            "name": "name",
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "required": true,
+            "deprecated": false,
+            "explode": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file, gzip NDJSON. Its `ETag` is the SHA-256 listed in the manifest.",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "ETAG": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CACHE-CONTROL": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CONTENT-DISPOSITION": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "",
+            "headers": {
+              "ETAG": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CACHE-CONTROL": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "export_snapshot_file"
+      }
+    },
     "/v1/keys": {
       "post": {
         "tags": [

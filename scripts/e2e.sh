@@ -34,7 +34,7 @@ check() { # check <description> <jq expr that must be true> <json>
 
 [ -x "$BIN" ] || die "binary $BIN not found (cargo build -p eatsights)"
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-sign() { "$BIN" sign --key "$1"; }
+sign() { "$BIN" sign --key="$1"; }
 newid() { "$BIN" id "$1"; }
 
 if [ -z "${ROOT_PRIVATE_KEY:-}" ]; then
@@ -83,7 +83,7 @@ grep -qi '^content-type: application/problem+json' "$TMP/bad.h" || die "tampered
 check "tampered key registration -> 401 problem+json" '.type | endswith("/problems/bad-signature")' "$(cat "$TMP/bad.json")"
 
 # ---- root vouches A and B as members
-ROOT_KEY_ID="$("$BIN" pubkey --key "$ROOT_PRIVATE_KEY" | jq -r .key_id)"
+ROOT_KEY_ID="$("$BIN" pubkey --key="$ROOT_PRIVATE_KEY" | jq -r .key_id)"
 [ -n "$ROOT_KEY_ID" ] || die "no published root key"
 vouch() {
   jq -n --arg id "$(newid at_)" --arg i "$ROOT_KEY_ID" --arg s "$1" --arg t "$(now)" \
@@ -252,8 +252,12 @@ if [ -n "${EXPORT_DIR:-}" ]; then
   MAN="$(get /v1/export)"
   check "export manifest" '(.files | length == 8) and (.changes_seq > 0) and .license == "CC0-1.0"' "$MAN"
   SEQ="$(echo "$MAN" | jq -r .changes_seq)"
+  SNAP="$(echo "$MAN" | jq -r .snapshot)"
   for NAME in $(echo "$MAN" | jq -r '.files[].name'); do
-    curl -sS -D "$TMP/x.h" -o "$TMP/$NAME" "$BASE/v1/export/$NAME"
+    URL="$(echo "$MAN" | jq -r ".files[] | select(.name == \"$NAME\") | .url")"
+    case "$URL" in */v1/export/"$SNAP"/"$NAME") ;; *) die "$NAME url is not snapshot-pinned: $URL" ;; esac
+    curl -sS -D "$TMP/x.h" -o "$TMP/$NAME" "$BASE/v1/export/$SNAP/$NAME"
+    grep -qi '^cache-control: .*immutable' "$TMP/x.h" || die "$NAME snapshot file not immutable"
     grep -qi '^content-type: application/gzip' "$TMP/x.h" || die "$NAME content type"
     SUM="$( (sha256sum "$TMP/$NAME" 2>/dev/null || shasum -a 256 "$TMP/$NAME") | cut -d' ' -f1)"
     [ "$SUM" = "$(echo "$MAN" | jq -r ".files[] | select(.name == \"$NAME\") | .sha256")" ] || die "$NAME checksum"
@@ -287,6 +291,16 @@ ok "pre-compressed gzip"
 CODE="$(curl -sS -o "$TMP/nf.json" -D "$TMP/nf.h" -w '%{http_code}' "$BASE/v1/places/pl_00000000000000000000000000")"
 [ "$CODE" = 404 ] && grep -qi 'application/problem+json' "$TMP/nf.h" || die "404 is not problem+json"
 ok "404 problem+json"
+
+# ---- CORS: browsers on any origin may read and post (no credentials)
+curl -sS -D "$TMP/c1" -o /dev/null -H 'Origin: https://app.example' "$BASE/v1/places/$PL"
+grep -qiE '^access-control-allow-origin: (\*|https://app\.example)' "$TMP/c1" || die "no CORS on GET"
+grep -qi '^access-control-allow-credentials: true' "$TMP/c1" && die "CORS allows credentials"
+CODE="$(curl -sS -o /dev/null -D "$TMP/c2" -w '%{http_code}' -X OPTIONS -H 'Origin: https://app.example' \
+  -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: content-type' "$BASE/v1/submissions")"
+case "$CODE" in 200|204) ;; *) die "CORS preflight returned $CODE" ;; esac
+grep -qi '^access-control-allow-methods:.*POST' "$TMP/c2" || die "preflight lacks POST"
+ok "CORS for browser clients"
 
 # ---- M5: signed admin actions (merge, undo, removal)
 admin() { # admin <action> <params json>
