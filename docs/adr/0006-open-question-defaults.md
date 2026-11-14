@@ -4,7 +4,7 @@ Status: Accepted as defaults by the maintainer ("go with sane defaults", 2026-11
 
 | # | Question (SCHEMA.md / AGENTS.md 12) | Default |
 |---|---|---|
-| 1a | Weight per level | As ADR-0003: unverified 0.5, member 1.0, trusted 1.5, verifier 2.0, vendor 1.5, import 0.75 (see `aggregation.toml`). |
+| 1a | Weight per level | As ADR-0003: unverified 0.5, member 1.0, trusted 1.5, verifier 2.0, vendor 1.5, import 0.5 (see `aggregation.toml`). |
 | 1b | Maximum chain depth | 4 (root 0). A vouch that would put the subject deeper than 4 is rejected. Config `EATSIGHTS_TRUST_MAX_DEPTH`. |
 | 1c | Default attestation expiry | `vendor_of`: max 365 days; issued without `expires_at` it is treated as expiring 365 days after `issued_at`. `vouch`: no expiry. Config `EATSIGHTS_VENDOR_OF_MAX_DAYS`. |
 | 1d | Penalty for vouching for a bad key | When a vouch is revoked by root or a verifier with reason `abuse`, the issuer gets a strike. 2 strikes within 180 days lower the issuer one level (never below `member`, root exempt) and the issuer cannot vouch for 30 days. Config `EATSIGHTS_TRUST_STRIKES`, `..._STRIKE_WINDOW_DAYS`, `..._VOUCH_COOLDOWN_DAYS`. |
