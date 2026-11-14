@@ -7,6 +7,8 @@
 #   EATSIGHTS_ROOT_PUBLIC_KEY matches.
 #
 # Needs: curl, jq, and the eatsights binary ($EATSIGHTS_BIN, default target/debug/eatsights).
+# In mode 1 the server runs with EATSIGHTS_TRUST_MAX_DEPTH=2 (E2E_TRUST_MAX_DEPTH) so the
+# depth limit is reachable; in mode 2 set E2E_TRUST_MAX_DEPTH to the server value to test it.
 # Exits non-zero on the first failure.
 set -euo pipefail
 
@@ -38,8 +40,10 @@ if [ -z "${ROOT_PRIVATE_KEY:-}" ]; then
   ROOT="$("$BIN" keygen)"
   ROOT_PRIVATE_KEY="$(echo "$ROOT" | jq -r .private_key)"
   BASE="http://127.0.0.1:$PORT"
+  E2E_TRUST_MAX_DEPTH="${E2E_TRUST_MAX_DEPTH:-2}"
   EATSIGHTS_ROOT_PUBLIC_KEY="$(echo "$ROOT" | jq -r .public_key)" \
   EATSIGHTS_PSEUDONYM_SALT="${EATSIGHTS_PSEUDONYM_SALT:-e2e-only-salt-0123456789abcdef0123456789}" \
+  EATSIGHTS_TRUST_MAX_DEPTH="$E2E_TRUST_MAX_DEPTH" \
   EATSIGHTS_LISTEN="127.0.0.1:$PORT" EATSIGHTS_POLL_MS=200 EATSIGHTS_WORKER_INTERVAL_SECS=1 \
     "$BIN" serve $([ "${E2E_MIGRATE:-1}" = 1 ] && echo --migrate) >"$TMP/server.log" 2>&1 &
   SERVER_PID=$!
@@ -155,6 +159,87 @@ ALL="$(for u in "/v1/places?cell=t9y" "/v1/places/$PL" "/v1/places/$PL/menu" "/v
   "/v1/facts?place_id=$PL" "/v1/observations?place_id=$PL" "/v1/changes?after=0&limit=500" "/v1/attestations?type=vendor_of" "/v1/keys/published"; do get "$u"; done)"
 if echo "$ALL" | grep -q -e "$A_ID" -e "$B_ID" -e '"signature"'; then die "public responses leak key ids or signatures"; fi
 ok "no key ids or signatures in public responses"
+
+# ---- trust and vendors (M4)
+wait_for() { # wait_for <description> <jq expr> <url>
+  local body=""
+  for _ in $(seq 1 50); do
+    body="$(get "$3")"
+    echo "$body" | jq -e "$2" >/dev/null 2>&1 && break
+    sleep 0.2
+  done
+  check "$1" "$2" "$body"
+}
+attest() { # attest <issuer secret> <json without signature>
+  echo "$2" | sign "$1" | jq -s . | post /v1/attestations
+}
+mkatt() { # mkatt <type> <issuer id> <subject id> [extra json]
+  local x="${4:-}"; [ -n "$x" ] || x="{}"
+  jq -n --arg id "$(newid at_)" --arg ty "$1" --arg i "$2" --arg s "$3" --arg t "$(now)" --argjson x "$x" \
+    '{id:$id,type:$ty,issuer_key_id:$i,subject_key_id:$s,issued_at:$t} + $x'
+}
+V="$("$BIN" keygen)"; K="$("$BIN" keygen)"; K2="$("$BIN" keygen)"; T="$("$BIN" keygen)"; M="$("$BIN" keygen)"; X="$("$BIN" keygen)"
+for k in "$V" "$K" "$K2" "$T" "$M" "$X"; do
+  R="$(register "$k")"; check "register trust key" '.level == "unverified"' "$R"
+done
+id_of() { echo "$1" | jq -r .key_id; }
+sk_of() { echo "$1" | jq -r .private_key; }
+V_ID="$(id_of "$V")"; K_ID="$(id_of "$K")"; K2_ID="$(id_of "$K2")"; T_ID="$(id_of "$T")"; M_ID="$(id_of "$M")"; X_ID="$(id_of "$X")"
+
+R="$(attest "$ROOT_PRIVATE_KEY" "$(mkatt vouch "$ROOT_KEY_ID" "$V_ID" '{"level_granted":"verifier"}')")"
+check "root grants verifier V" '.results[0].status == "accepted"' "$R"
+wait_for "V is published" "[.items[].key_id] | index(\"$V_ID\") != null" /v1/keys/published
+
+BIND="$(mkatt vendor_of "$V_ID" "$K_ID" "{\"place_id\":\"$PL\"}")"
+BIND_ID="$(echo "$BIND" | jq -r .id)"
+R="$(attest "$(sk_of "$V")" "$BIND")"; check "V binds vendor key K to the place" '.results[0].status == "accepted"' "$R"
+wait_for "vendor binding listed with default expiry" "[.items[] | select(.id == \"$BIND_ID\" and .active and (.expires_at | type == \"string\"))] | length == 1" "/v1/attestations?type=vendor_of&place_id=$PL"
+
+vobs() { # vobs <key json>
+  jq -n --arg id "$(newid ob_)" --arg pl "$PL" --arg mi "$MI" --arg t "$(now)" --arg k "$(id_of "$1")" \
+    '{id:$id,schema_version:"0.3",kind:"value",property:"price.amount",
+      subject:{scope:"menu_item",place_id:$pl,menu_item_id:$mi},
+      value:{amount_minor:1400,currency:"INR",fulfilment:"dine_in"},
+      observed_at:$t,submitted_at:$t,method:"in_person",source_type:"vendor",license:"CC0-1.0",
+      contributor:{key_id:$k}}' | sign "$(sk_of "$1")"
+}
+VO="$(vobs "$K")"; VO_ID="$(echo "$VO" | jq -r .id)"
+R="$(echo "[$VO]" | post /v1/submissions)"; check "vendor observation accepted" '.results[0].status == "accepted"' "$R"
+wait_for "vendor observation has class vendor" "[.items[] | select(.id == \"$VO_ID\") | .contributor.class] == [\"vendor\"]" "/v1/observations?menu_item_id=$MI&limit=500"
+
+R="$(attest "$(sk_of "$K")" "$(mkatt rotate "$K_ID" "$K2_ID")")"; check "rotate K to K2" '.results[0].status == "accepted"' "$R"
+R="$(echo "[$(vobs "$K")]" | post /v1/submissions)"; check "rotated key K rejected" '.results[0].status == "rejected" and .results[0].problem.status == 403' "$R"
+R="$(echo "[$(vobs "$K2")]" | post /v1/submissions)"; check "successor K2 keeps the vendor binding" '.results[0].status == "accepted"' "$R"
+
+R="$(attest "$(sk_of "$V")" "$(mkatt revoke "$V_ID" "$K_ID" "{\"revokes\":\"$BIND_ID\"}")")"
+check "V revokes the binding" '.results[0].status == "accepted"' "$R"
+R="$(echo "[$(vobs "$K2")]" | post /v1/submissions)"
+check "vendor submissions rejected after revoke" '.results[0].status == "rejected" and (.results[0].problem.type | endswith("not-vendor"))' "$R"
+wait_for "revoked binding hidden by default" "[.items[].id] | index(\"$BIND_ID\") == null" "/v1/attestations?type=vendor_of&place_id=$PL"
+wait_for "revoked binding listed with include_inactive" "[.items[] | select(.id == \"$BIND_ID\") | .active] == [false]" "/v1/attestations?type=vendor_of&place_id=$PL&include_inactive=true"
+
+VT="$(mkatt vouch "$V_ID" "$T_ID" '{"level_granted":"trusted"}')"
+VX="$(mkatt vouch "$V_ID" "$X_ID" '{"level_granted":"trusted"}')"
+R="$( (echo "$VT" | sign "$(sk_of "$V")"; echo "$VX" | sign "$(sk_of "$V")") | jq -s . | post /v1/attestations)"
+check "V vouches T and X as trusted (depth 2)" '[.results[].status] == ["accepted","accepted"]' "$R"
+if [ -n "${E2E_TRUST_MAX_DEPTH:-}" ] && [ "$E2E_TRUST_MAX_DEPTH" -le 2 ]; then
+  R="$(attest "$(sk_of "$T")" "$(mkatt vouch "$T_ID" "$M_ID" '{"level_granted":"member"}')")"
+  check "vouch beyond max depth rejected" '.results[0].status == "rejected" and (.results[0].problem.type | endswith("depth-exceeded"))' "$R"
+fi
+
+R="$(attest "$ROOT_PRIVATE_KEY" "$(mkatt revoke "$ROOT_KEY_ID" "$T_ID" "{\"revokes\":$(echo "$VT" | jq .id)}")")"
+check "root revokes V's vouch for T (strike 1)" '.results[0].status == "accepted"' "$R"
+R="$(attest "$ROOT_PRIVATE_KEY" "$(mkatt revoke "$ROOT_KEY_ID" "$X_ID" "{\"revokes\":$(echo "$VX" | jq .id)}")")"
+check "root revokes V's vouch for X (strike 2)" '.results[0].status == "accepted"' "$R"
+wait_for "demoted V is no longer published" "[.items[].key_id] | index(\"$V_ID\") == null" /v1/keys/published
+R="$(attest "$(sk_of "$V")" "$(mkatt vouch "$V_ID" "$M_ID" '{"level_granted":"member"}')")"
+check "demoted V is in vouch cooldown" '.results[0].status == "rejected" and (.results[0].problem.type | endswith("vouch-cooldown"))' "$R"
+
+TRUST_PUBLIC="$(for u in "/v1/attestations?type=vendor_of&include_inactive=true" "/v1/keys/published" "/v1/changes?after=0&limit=500" "/v1/observations?place_id=$PL&limit=500"; do get "$u"; done)"
+if echo "$TRUST_PUBLIC" | grep -q -e "$T_ID" -e "$M_ID" -e "$X_ID" -e '"signature"' -e vouch -e rotate -e '"revokes"'; then
+  die "public responses leak the trust graph"
+fi
+ok "no vouch, revoke or rotate data in public responses"
 
 # ---- caching
 curl -sS -D "$TMP/h1" -o /dev/null "$BASE/v1/places/$PL/menu"

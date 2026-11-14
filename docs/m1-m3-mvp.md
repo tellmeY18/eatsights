@@ -18,7 +18,7 @@ Date: 2026-11-14. Scope per ADR-0004 and `docs/mvp-contract.md`.
 
 - Facts are recomputed only when new observations arrive. A periodic sweep that ages facts to `stale` without new input is not built yet.
 - `/v1/export/*` returns 404. The `export` CLI writes snapshots, but the worker does not schedule them.
-- `rotate` attestations, vouch depth limits, the OSM checker, the duplicate detector and the merge flow are not built. Revoking a vouch resets the subject to `unverified`.
+- (Superseded by M4, see `docs/m4-trust.md`.) `rotate` attestations, vouch depth limits, the OSM checker, the duplicate detector and the merge flow are not built. Revoking a vouch resets the subject to `unverified`.
 - ETags are global (latest seq), not per resource. They are correct but conservative.
 - In `export`, each table is loaded in memory (fine for MVP sizes).
 - Observations with `source_type: vendor` from a key without a current `vendor_of` are rejected (403 `not-vendor`), not down-classed.

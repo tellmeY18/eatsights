@@ -563,19 +563,22 @@ impl ReadApi {
         .await
     }
 
-    /// Public attestations. Only `type=vendor_of` is public.
+    /// Public attestations. Only `type=vendor_of` is public; current bindings only unless `include_inactive=true`.
     #[oai(
         path = "/attestations",
         method = "get",
         tag = "ApiTags::Feed",
         operation_id = "attestations"
     )]
+    #[allow(clippy::too_many_arguments)]
     async fn attestations(
         &self,
         st: Data<&Arc<AppState>>,
         req: &Request,
         #[oai(name = "type")] kind: Query<Option<String>>,
         place_id: Query<Option<String>>,
+        /// Also list expired and revoked bindings (flagged `active: false`).
+        include_inactive: Query<Option<bool>>,
         cursor: Query<Option<String>>,
         limit: Query<Option<i64>>,
     ) -> Result<ReadResp, ProblemResp> {
@@ -593,6 +596,7 @@ impl ReadApi {
                 read::list_vendor_bindings(
                     &st.db.read,
                     place_id.0.as_deref(),
+                    include_inactive.0.unwrap_or(false),
                     cursor.0.as_deref(),
                     lim,
                 )
@@ -602,7 +606,7 @@ impl ReadApi {
         .await
     }
 
-    /// Signed attestations: `vouch`, `vendor_of`, `revoke` (MVP: issued by root or verifier keys).
+    /// Signed attestations: `vouch`, `vendor_of`, `revoke`, `rotate` (rules in ADR-0007).
     #[oai(
         path = "/attestations",
         method = "post",

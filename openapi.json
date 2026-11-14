@@ -1243,7 +1243,7 @@
         "tags": [
           "Feed"
         ],
-        "summary": "Public attestations. Only `type=vendor_of` is public.",
+        "summary": "Public attestations. Only `type=vendor_of` is public; current bindings only unless `include_inactive=true`.",
         "parameters": [
           {
             "name": "type",
@@ -1261,6 +1261,17 @@
               "type": "string"
             },
             "in": "query",
+            "required": false,
+            "deprecated": false,
+            "explode": true
+          },
+          {
+            "name": "include_inactive",
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "description": "Also list expired and revoked bindings (flagged `active: false`).",
             "required": false,
             "deprecated": false,
             "explode": true
@@ -1373,7 +1384,7 @@
         "tags": [
           "Write"
         ],
-        "summary": "Signed attestations: `vouch`, `vendor_of`, `revoke` (MVP: issued by root or verifier keys).",
+        "summary": "Signed attestations: `vouch`, `vendor_of`, `revoke`, `rotate` (rules in ADR-0007).",
         "requestBody": {
           "content": {
             "application/json; charset=utf-8": {

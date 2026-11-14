@@ -8,6 +8,7 @@ pub mod jcs;
 pub mod registry;
 pub mod schema;
 pub mod submission;
+pub mod trust;
 
 /// Public base address. The binary may override it at runtime with `EATSIGHTS_BASE_URL`.
 pub const BASE_URL: &str = "https://eatsights.letsimpl.fyi";

@@ -110,6 +110,17 @@ async fn sync_registry(db: &Db, reg: &Registry) -> Result<u64, BoxError> {
     Ok(write::sync_registry(&db.write, reg.version(), reg.hash(), &entries).await?)
 }
 
+fn trust_config() -> Result<eatsights_core::trust::TrustConfig, BoxError> {
+    let d = eatsights_core::trust::TrustConfig::default();
+    Ok(eatsights_core::trust::TrustConfig {
+        max_depth: env_num("EATSIGHTS_TRUST_MAX_DEPTH", d.max_depth)?,
+        vendor_of_max_days: env_num("EATSIGHTS_VENDOR_OF_MAX_DAYS", d.vendor_of_max_days)?,
+        strikes: env_num("EATSIGHTS_TRUST_STRIKES", d.strikes)?,
+        strike_window_days: env_num("EATSIGHTS_TRUST_STRIKE_WINDOW_DAYS", d.strike_window_days)?,
+        vouch_cooldown_days: env_num("EATSIGHTS_TRUST_VOUCH_COOLDOWN_DAYS", d.vouch_cooldown_days)?,
+    })
+}
+
 fn api_config() -> Result<ApiConfig, BoxError> {
     let salt = env("EATSIGHTS_PSEUDONYM_SALT").ok_or("EATSIGHTS_PSEUDONYM_SALT is required")?;
     if salt.len() < 32 {
@@ -138,6 +149,7 @@ fn api_config() -> Result<ApiConfig, BoxError> {
         request_timeout_secs: env_num("EATSIGHTS_REQUEST_TIMEOUT_SECS", d.request_timeout_secs)?,
         body_limit_bytes: env_num("EATSIGHTS_BODY_LIMIT_BYTES", d.body_limit_bytes)?,
         swagger_ui: env_num("EATSIGHTS_SWAGGER_UI", d.swagger_ui)?,
+        trust: trust_config()?,
     })
 }
 
@@ -174,6 +186,7 @@ async fn serve(roles: &str, migrate: bool) -> Result<(), BoxError> {
         &db.write,
         &crypto::key_id(&root_vk),
         &crypto::encode_public_key(&root_vk),
+        trust_config()?.max_depth,
     )
     .await?;
     sync_registry(&db, reg).await?;

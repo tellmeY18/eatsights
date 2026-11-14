@@ -10,6 +10,7 @@ use eatsights_core::schema;
 use eatsights_core::submission::{
     ContributorClass, SourceType, check_submission, to_public_observation,
 };
+use eatsights_core::trust::{self, Level};
 use eatsights_db::DbError;
 use eatsights_db::write::{
     self, KeyRow, NewAttestation, NewEntitySubmission, NewObservation, Outcome,
@@ -494,6 +495,7 @@ impl AppState {
                 e.join("; "),
             )
         })?;
+        let forbidden = |d: &str| p(403, "forbidden", "Forbidden", d);
         let id = str_of(a, "/id").unwrap_or_default();
         let kind = str_of(a, "/type").unwrap_or_default();
         let issuer_id = str_of(a, "/issuer_key_id").unwrap_or_default();
@@ -506,45 +508,94 @@ impl AppState {
         {
             return Ok("duplicate");
         }
-        let issuer_rank = match issuer.level.as_str() {
-            "root" => 2,
-            "verifier" => 1,
-            _ => 0,
-        };
-        if issuer_rank == 0 {
+        let now = Utc::now();
+        let issued_at = parse_time(str_of(a, "/issued_at")).unwrap_or(now);
+        if issued_at > now + Duration::minutes(5) {
             return Err(p(
-                403,
-                "forbidden",
-                "Forbidden",
-                "only root and verifier keys issue attestations in the MVP",
+                422,
+                "issued-in-future",
+                "Issued in the future",
+                "issued_at is in the future",
             ));
         }
-        let mut level_granted = None;
+        let issuer_level = Level::parse(&issuer.level).unwrap_or(Level::Unverified);
+        let cfg = &self.cfg.trust;
+        if kind != "revoke" && subject_id == issuer.key_id {
+            return Err(p(
+                422,
+                "self-attestation",
+                "Self attestation",
+                "issuer and subject must differ",
+            ));
+        }
         let mut revokes = None;
-        match kind {
-            "vouch" | "vendor_of" => {
-                let subject = write::get_key(&self.db.write, subject_id)
-                    .await
-                    .map_err(db_problem)?;
-                if subject.is_none_or(|s| s.status != "active") {
-                    return Err(p(
+        let mut strike_against = None;
+        let mut expires_at = parse_time(str_of(a, "/expires_at"));
+        let subject = if kind == "revoke" {
+            None
+        } else {
+            let s = write::get_key(&self.db.write, subject_id)
+                .await
+                .map_err(db_problem)?
+                .filter(|s| s.status == "active")
+                .ok_or_else(|| {
+                    p(
                         422,
                         "unknown-subject-key",
                         "Unknown subject key",
                         "subject key is not registered or not active",
+                    )
+                })?;
+            Some(s)
+        };
+        match kind {
+            "vouch" => {
+                let granted = str_of(a, "/level_granted")
+                    .and_then(Level::parse)
+                    .unwrap_or(Level::Member);
+                if !trust::can_grant(issuer_level, granted) {
+                    return Err(forbidden(&format!(
+                        "a {} key cannot grant {}",
+                        issuer_level.as_str(),
+                        granted.as_str()
+                    )));
+                }
+                if issuer.vouch_cooldown_until.is_some_and(|t| t > now) {
+                    return Err(p(
+                        403,
+                        "vouch-cooldown",
+                        "Vouch cooldown",
+                        "the issuer may not vouch until its cooldown ends",
                     ));
                 }
-                if kind == "vouch" {
-                    let l = str_of(a, "/level_granted").unwrap_or("member");
-                    if issuer_rank < 2 && l == "verifier" {
+                if issuer.depth.unwrap_or(i32::MAX).saturating_add(1) > cfg.max_depth {
+                    return Err(p(
+                        422,
+                        "depth-exceeded",
+                        "Chain too deep",
+                        format!("the subject would be deeper than {}", cfg.max_depth),
+                    ));
+                }
+            }
+            "vendor_of" => {
+                if issuer_level < Level::Verifier {
+                    return Err(forbidden("only verifier and root keys bind vendors"));
+                }
+                let max = issued_at + Duration::days(cfg.vendor_of_max_days);
+                match expires_at {
+                    None => expires_at = Some(max),
+                    Some(e) if e <= issued_at || e > max => {
                         return Err(p(
-                            403,
-                            "forbidden",
-                            "Forbidden",
-                            "only root grants verifier",
+                            422,
+                            "invalid-expiry",
+                            "Invalid expiry",
+                            format!(
+                                "expires_at must be after issued_at and at most {} days later",
+                                cfg.vendor_of_max_days
+                            ),
                         ));
                     }
-                    level_granted = Some(l);
+                    Some(_) => {}
                 }
             }
             "revoke" => {
@@ -560,33 +611,58 @@ impl AppState {
                             "revoked attestation not found",
                         )
                     })?;
-                if issuer_rank < 2 && t.issuer_key_id != issuer.key_id {
+                if t.kind != "vouch" && t.kind != "vendor_of" {
                     return Err(p(
-                        403,
-                        "forbidden",
-                        "Forbidden",
-                        "only the issuer or root may revoke",
+                        422,
+                        "not-revocable",
+                        "Not revocable",
+                        format!("a {} attestation cannot be revoked", t.kind),
                     ));
+                }
+                if t.revoked {
+                    return Err(p(
+                        409,
+                        "already-revoked",
+                        "Already revoked",
+                        "the attestation is already revoked",
+                    ));
+                }
+                if t.subject_key_id != subject_id {
+                    return Err(p(
+                        422,
+                        "subject-mismatch",
+                        "Subject mismatch",
+                        "subject_key_id must equal the revoked attestation's subject",
+                    ));
+                }
+                let own = t.issuer_key_id == issuer.key_id;
+                if !own && issuer_level < Level::Verifier {
+                    return Err(forbidden("only the issuer, a verifier or root may revoke"));
+                }
+                if t.kind == "vouch" && !own {
+                    strike_against = Some(t.issuer_key_id);
                 }
                 revokes = Some(target);
             }
             _ => {
-                return Err(p(
-                    422,
-                    "unsupported",
-                    "Unsupported",
-                    "rotate is not supported in the MVP",
-                ));
+                // rotate: the old key (issuer) hands over to a fresh key (subject).
+                if issuer_level == Level::Root {
+                    return Err(p(
+                        422,
+                        "root-rotation",
+                        "Root rotation",
+                        "the root key is rotated by configuration",
+                    ));
+                }
+                if subject.as_ref().is_some_and(|s| s.level != "unverified") {
+                    return Err(p(
+                        409,
+                        "subject-not-fresh",
+                        "Subject not fresh",
+                        "the successor key must be newly registered (unverified)",
+                    ));
+                }
             }
-        }
-        let issued_at = parse_time(str_of(a, "/issued_at")).unwrap_or_else(Utc::now);
-        if issued_at > Utc::now() + Duration::minutes(5) {
-            return Err(p(
-                422,
-                "issued-in-future",
-                "Issued in the future",
-                "issued_at is in the future",
-            ));
         }
         let outcome = write::insert_attestation(
             &self.db.write,
@@ -596,13 +672,13 @@ impl AppState {
                 issuer_key_id: &issuer.key_id,
                 subject_key_id: subject_id,
                 raw: a,
-                level_granted,
-                depth: Some(issuer.depth.unwrap_or(0) + 1),
                 place_id: str_of(a, "/place_id"),
                 revokes,
                 issued_at,
-                expires_at: parse_time(str_of(a, "/expires_at")),
+                expires_at,
+                strike_against: strike_against.as_deref(),
             },
+            cfg,
         )
         .await
         .map_err(db_problem)?;

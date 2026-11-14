@@ -29,6 +29,8 @@ pub struct ApiConfig {
     pub body_limit_bytes: usize,
     /// Serve Swagger UI at /docs. Off by default (AGENTS.md: no UI); see ADR-0005.
     pub swagger_ui: bool,
+    /// Trust policy numbers (ADR-0006).
+    pub trust: eatsights_core::trust::TrustConfig,
 }
 
 impl Default for ApiConfig {
@@ -47,6 +49,7 @@ impl Default for ApiConfig {
             request_timeout_secs: 10,
             body_limit_bytes: 1 << 20,
             swagger_ui: false,
+            trust: eatsights_core::trust::TrustConfig::default(),
         }
     }
 }

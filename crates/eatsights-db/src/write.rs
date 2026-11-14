@@ -1,8 +1,11 @@
 //! Write-path queries. Each accepted write is one transaction that also appends
 //! to `public.changes` and notifies `eatsights_changes`.
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use std::collections::HashSet;
+
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use eatsights_core::geo;
+use eatsights_core::trust::{self, Edge, KeyNode, Level, TrustConfig};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 
@@ -17,26 +20,34 @@ pub struct KeyRow {
     pub status: String,
     pub depth: Option<i32>,
     pub created_at: DateTime<Utc>,
+    pub successor_key_id: Option<String>,
+    pub vouch_cooldown_until: Option<DateTime<Utc>>,
+}
+
+const KEY_COLS: &str =
+    "key_id, public_key, level, status, depth, created_at, successor_key_id, vouch_cooldown_until";
+
+fn key_row(r: &sqlx::postgres::PgRow) -> Result<KeyRow> {
+    Ok(KeyRow {
+        key_id: r.try_get("key_id")?,
+        public_key: r.try_get("public_key")?,
+        level: r.try_get("level")?,
+        status: r.try_get("status")?,
+        depth: r.try_get("depth")?,
+        created_at: r.try_get("created_at")?,
+        successor_key_id: r.try_get("successor_key_id")?,
+        vouch_cooldown_until: r.try_get("vouch_cooldown_until")?,
+    })
 }
 
 pub async fn get_key(pool: &PgPool, key_id: &str) -> Result<Option<KeyRow>> {
-    let row = sqlx::query(
-        "SELECT key_id, public_key, level, status, depth, created_at FROM private.keys WHERE key_id = $1",
-    )
+    let row = sqlx::query(&format!(
+        "SELECT {KEY_COLS} FROM private.keys WHERE key_id = $1"
+    ))
     .bind(key_id)
     .fetch_optional(pool)
     .await?;
-    Ok(match row {
-        Some(r) => Some(KeyRow {
-            key_id: r.try_get("key_id")?,
-            public_key: r.try_get("public_key")?,
-            level: r.try_get("level")?,
-            status: r.try_get("status")?,
-            depth: r.try_get("depth")?,
-            created_at: r.try_get("created_at")?,
-        }),
-        None => None,
-    })
+    row.as_ref().map(key_row).transpose()
 }
 
 /// Register an `unverified` key. Returns `false` when the key already existed.
@@ -70,55 +81,139 @@ fn key_doc(k: &KeyRow) -> Value {
     })
 }
 
-async fn publish_key(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, key_id: &str) -> Result<()> {
-    let row = sqlx::query(
-        "SELECT key_id, public_key, level, status, depth, created_at FROM private.keys WHERE key_id = $1",
-    )
-    .bind(key_id)
-    .fetch_one(&mut **tx)
+type Tx<'a> = sqlx::Transaction<'a, sqlx::Postgres>;
+
+/// Make `public.published_keys` hold exactly the active root and verifier keys.
+async fn sync_published(tx: &mut Tx<'_>) -> Result<()> {
+    let rows = sqlx::query(&format!(
+        "SELECT {KEY_COLS} FROM private.keys WHERE status = 'active' AND level IN ('verifier', 'root')"
+    ))
+    .fetch_all(&mut **tx)
     .await?;
-    let k = KeyRow {
-        key_id: row.try_get("key_id")?,
-        public_key: row.try_get("public_key")?,
-        level: row.try_get("level")?,
-        status: row.try_get("status")?,
-        depth: row.try_get("depth")?,
-        created_at: row.try_get("created_at")?,
-    };
-    let changed = sqlx::query(
-        "INSERT INTO public.published_keys (key_id, doc, updated_at) VALUES ($1, $2, now())
-         ON CONFLICT (key_id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()
-         WHERE published_keys.doc IS DISTINCT FROM EXCLUDED.doc",
-    )
-    .bind(&k.key_id)
-    .bind(key_doc(&k))
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-    if changed > 0 {
-        add_change(tx, "key", &k.key_id, "publish").await?;
+    let mut keep = HashSet::new();
+    for r in &rows {
+        let k = key_row(r)?;
+        let changed = sqlx::query(
+            "INSERT INTO public.published_keys (key_id, doc, updated_at) VALUES ($1, $2, now())
+             ON CONFLICT (key_id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()
+             WHERE published_keys.doc IS DISTINCT FROM EXCLUDED.doc",
+        )
+        .bind(&k.key_id)
+        .bind(key_doc(&k))
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+        if changed > 0 {
+            add_change(tx, "key", &k.key_id, "publish").await?;
+        }
+        keep.insert(k.key_id);
+    }
+    let published: Vec<String> = sqlx::query_scalar("SELECT key_id FROM public.published_keys")
+        .fetch_all(&mut **tx)
+        .await?;
+    for k in published.iter().filter(|k| !keep.contains(*k)) {
+        sqlx::query("DELETE FROM public.published_keys WHERE key_id = $1")
+            .bind(k)
+            .execute(&mut **tx)
+            .await?;
+        add_change(tx, "key", k, "unpublish").await?;
     }
     Ok(())
 }
 
-/// Upsert the root key (level root, depth 0) and publish it.
-pub async fn upsert_root_key(pool: &PgPool, key_id: &str, public_key: &str) -> Result<()> {
+/// Serialise trust-graph changes.
+async fn lock_trust(tx: &mut Tx<'_>) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(7243001)")
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Recompute every key's level and depth from the private graph
+/// ([`trust::recompute`]), store the differences and republish keys.
+async fn recompute_trust(tx: &mut Tx<'_>, max_depth: i32) -> Result<()> {
+    let rows =
+        sqlx::query("SELECT key_id, status, level, depth, level_cap, demoted_at FROM private.keys")
+            .fetch_all(&mut **tx)
+            .await?;
+    let mut keys = Vec::with_capacity(rows.len());
+    let mut current = std::collections::HashMap::new();
+    for r in &rows {
+        let id: String = r.try_get("key_id")?;
+        let level: String = r.try_get("level")?;
+        let depth: Option<i32> = r.try_get("depth")?;
+        let cap: Option<String> = r.try_get("level_cap")?;
+        keys.push(KeyNode {
+            key_id: id.clone(),
+            status: r.try_get("status")?,
+            is_root: level == "root",
+            level_cap: cap.as_deref().and_then(Level::parse),
+            demoted_at: r.try_get("demoted_at")?,
+        });
+        current.insert(id, (level, depth));
+    }
+    let erows = sqlx::query(
+        "SELECT issuer_key_id, subject_key_id, type, raw->>'level_granted' AS granted, received_at
+           FROM private.attestations
+          WHERE type IN ('vouch', 'rotate') AND revoked_at IS NULL
+            AND (raw->>'expires_at' IS NULL OR (raw->>'expires_at')::timestamptz > now())",
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut edges = Vec::with_capacity(erows.len());
+    for r in &erows {
+        let kind: String = r.try_get("type")?;
+        let granted: Option<String> = r.try_get("granted")?;
+        let granted = if kind == "vouch" {
+            match granted.as_deref().and_then(Level::parse) {
+                Some(l) => Some(l),
+                None => continue,
+            }
+        } else {
+            None
+        };
+        edges.push(Edge {
+            issuer: r.try_get("issuer_key_id")?,
+            subject: r.try_get("subject_key_id")?,
+            granted,
+            received_at: r.try_get("received_at")?,
+        });
+    }
+    let standings = trust::recompute(&keys, &edges, max_depth);
+    for (id, s) in &standings {
+        let Some((level, depth)) = current.get(id) else {
+            continue;
+        };
+        if level == "root" || (level.as_str() == s.level.as_str() && *depth == s.depth) {
+            continue;
+        }
+        sqlx::query("UPDATE private.keys SET level = $2, depth = $3 WHERE key_id = $1")
+            .bind(id)
+            .bind(s.level.as_str())
+            .bind(s.depth)
+            .execute(&mut **tx)
+            .await?;
+    }
+    sync_published(tx).await
+}
+
+/// Upsert the root key (level root, depth 0), recompute the graph and publish.
+pub async fn upsert_root_key(
+    pool: &PgPool,
+    key_id: &str,
+    public_key: &str,
+    max_depth: i32,
+) -> Result<()> {
     let mut tx = pool.begin().await?;
+    lock_trust(&mut tx).await?;
     // Only the configured root stays root.
-    let old: Vec<String> = sqlx::query_scalar(
+    sqlx::query(
         "UPDATE private.keys SET level = 'unverified', status = 'revoked', depth = NULL
-         WHERE level = 'root' AND key_id <> $1 RETURNING key_id",
+         WHERE level = 'root' AND key_id <> $1",
     )
     .bind(key_id)
-    .fetch_all(&mut *tx)
+    .execute(&mut *tx)
     .await?;
-    for k in &old {
-        sqlx::query("DELETE FROM public.published_keys WHERE key_id = $1")
-            .bind(k)
-            .execute(&mut *tx)
-            .await?;
-        add_change(&mut tx, "key", k, "unpublish").await?;
-    }
     sqlx::query(
         "INSERT INTO private.keys (key_id, public_key, level, status, depth, created_at)
          VALUES ($1, $2, 'root', 'active', 0, now())
@@ -128,7 +223,7 @@ pub async fn upsert_root_key(pool: &PgPool, key_id: &str, public_key: &str) -> R
     .bind(public_key)
     .execute(&mut *tx)
     .await?;
-    publish_key(&mut tx, key_id).await?;
+    recompute_trust(&mut tx, max_depth).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -172,7 +267,7 @@ pub async fn has_vendor_binding(
     now: DateTime<Utc>,
 ) -> Result<bool> {
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM public.vendor_bindings WHERE subject_key_id = $1 AND place_id = $2
+        "SELECT EXISTS (SELECT 1 FROM public.vendor_bindings WHERE holder_key_id = $1 AND place_id = $2
            AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > $3))",
     )
     .bind(key_id)
@@ -587,19 +682,100 @@ pub struct NewAttestation<'a> {
     pub issuer_key_id: &'a str,
     pub subject_key_id: &'a str,
     pub raw: &'a Value,
-    pub level_granted: Option<&'a str>,
-    /// Depth of the subject after a vouch (issuer depth + 1).
-    pub depth: Option<i32>,
     pub place_id: Option<&'a str>,
     pub revokes: Option<&'a str>,
     pub issued_at: DateTime<Utc>,
+    /// Effective expiry (for `vendor_of`, defaulted by the caller).
     pub expires_at: Option<DateTime<Utc>>,
+    /// For a revoke of a vouch by root or a verifier other than its issuer: the
+    /// vouch issuer, who receives an abuse strike (ADR-0007).
+    pub strike_against: Option<&'a str>,
 }
 
-const LEVELS: &str = "ARRAY['unverified','member','trusted','verifier','root']";
+/// The key that currently stands for `key_id` (follows rotation successors).
+async fn current_holder(tx: &mut Tx<'_>, key_id: &str) -> Result<String> {
+    let mut k = key_id.to_owned();
+    for _ in 0..16 {
+        let next: Option<Option<String>> =
+            sqlx::query_scalar("SELECT successor_key_id FROM private.keys WHERE key_id = $1")
+                .bind(&k)
+                .fetch_optional(&mut **tx)
+                .await?;
+        match next.flatten() {
+            Some(n) => k = n,
+            None => break,
+        }
+    }
+    Ok(k)
+}
 
-pub async fn insert_attestation(pool: &PgPool, a: &NewAttestation<'_>) -> Result<Outcome> {
+/// Record a strike; demote and impose a vouch cooldown at the threshold.
+async fn strike(
+    tx: &mut Tx<'_>,
+    key_id: &str,
+    vouch_id: &str,
+    revoke_id: &str,
+    cfg: &TrustConfig,
+) -> Result<()> {
+    let holder = current_holder(tx, key_id).await?;
+    let row: Option<(String, Option<String>, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT level, level_cap, demoted_at FROM private.keys WHERE key_id = $1 FOR UPDATE",
+    )
+    .bind(&holder)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((level, cap, demoted_at)) = row else {
+        return Ok(());
+    };
+    if level == "root" {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO private.strikes (key_id, attestation_id, revoke_id) VALUES ($1, $2, $3)",
+    )
+    .bind(&holder)
+    .bind(vouch_id)
+    .bind(revoke_id)
+    .execute(&mut **tx)
+    .await?;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM private.strikes WHERE key_id = $1
+           AND at > now() - make_interval(days => $2::int)
+           AND at > COALESCE($3, '-infinity'::timestamptz)",
+    )
+    .bind(&holder)
+    .bind(i32::try_from(cfg.strike_window_days).unwrap_or(i32::MAX))
+    .bind(demoted_at)
+    .fetch_one(&mut **tx)
+    .await?;
+    if n < cfg.strikes {
+        return Ok(());
+    }
+    let cur = Level::parse(&level).unwrap_or(Level::Unverified);
+    let mut new_cap = cur.demoted();
+    if let Some(c) = cap.as_deref().and_then(Level::parse) {
+        new_cap = new_cap.min(c);
+    }
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE private.keys SET level_cap = $2, demoted_at = $3, vouch_cooldown_until = $4 WHERE key_id = $1",
+    )
+    .bind(&holder)
+    .bind(new_cap.as_str())
+    .bind(now)
+    .bind(now + Duration::days(cfg.vouch_cooldown_days))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub async fn insert_attestation(
+    pool: &PgPool,
+    a: &NewAttestation<'_>,
+    cfg: &TrustConfig,
+) -> Result<Outcome> {
     let mut tx = pool.begin().await?;
+    lock_trust(&mut tx).await?;
     let fresh: Option<String> = sqlx::query_scalar(
         "INSERT INTO private.attestations (id, type, issuer_key_id, subject_key_id, raw)
          VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING RETURNING id",
@@ -616,29 +792,21 @@ pub async fn insert_attestation(pool: &PgPool, a: &NewAttestation<'_>) -> Result
         return Ok(Outcome::Duplicate(None));
     }
     match a.kind {
-        "vouch" => {
-            let level = a.level_granted.unwrap_or("member");
-            sqlx::query(&format!(
-                "UPDATE private.keys SET level = $2, depth = $3 WHERE key_id = $1
-                 AND array_position({LEVELS}, level) < array_position({LEVELS}, $2::text)"
-            ))
-            .bind(a.subject_key_id)
-            .bind(level)
-            .bind(a.depth)
-            .execute(&mut *tx)
-            .await?;
-            if level == "verifier" {
-                publish_key(&mut tx, a.subject_key_id).await?;
-            }
-        }
+        "vouch" => {}
         "vendor_of" => {
             let mut public = a.raw.clone();
             if let Some(o) = public.as_object_mut() {
                 o.remove("signature");
+                if let Some(e) = a.expires_at {
+                    o.insert(
+                        "expires_at".into(),
+                        json!(e.to_rfc3339_opts(SecondsFormat::Secs, true)),
+                    );
+                }
             }
             sqlx::query(
-                "INSERT INTO public.vendor_bindings (id, place_id, subject_key_id, doc, issued_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO public.vendor_bindings (id, place_id, subject_key_id, holder_key_id, doc, issued_at, expires_at)
+                 VALUES ($1, $2, $3, $3, $4, $5, $6)",
             )
             .bind(a.id)
             .bind(a.place_id)
@@ -653,15 +821,15 @@ pub async fn insert_attestation(pool: &PgPool, a: &NewAttestation<'_>) -> Result
         }
         "revoke" => {
             let target = a.revokes.unwrap_or_default();
-            let kind: Option<(String, String)> = sqlx::query_as(
+            let kind: Option<String> = sqlx::query_scalar(
                 "UPDATE private.attestations SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
-                 RETURNING type, subject_key_id",
+                 RETURNING type",
             )
             .bind(target)
             .fetch_optional(&mut *tx)
             .await?;
-            match kind.as_ref().map(|(k, s)| (k.as_str(), s.as_str())) {
-                Some(("vendor_of", _)) => {
+            match kind.as_deref() {
+                Some("vendor_of") => {
                     sqlx::query(
                         "UPDATE public.vendor_bindings SET revoked_at = now() WHERE id = $1",
                     )
@@ -670,21 +838,53 @@ pub async fn insert_attestation(pool: &PgPool, a: &NewAttestation<'_>) -> Result
                     .await?;
                     add_change(&mut tx, "vendor_binding", target, "revoke").await?;
                 }
-                Some(("vouch", subject)) => {
-                    sqlx::query("UPDATE private.keys SET level = 'unverified', depth = NULL WHERE key_id = $1 AND level <> 'root'")
-                        .bind(subject)
-                        .execute(&mut *tx)
-                        .await?;
-                    let n = sqlx::query("DELETE FROM public.published_keys WHERE key_id = $1")
-                        .bind(subject)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected();
-                    if n > 0 {
-                        add_change(&mut tx, "key", subject, "unpublish").await?;
+                Some("vouch") => {
+                    if let Some(k) = a.strike_against {
+                        strike(&mut tx, k, target, a.id, cfg).await?;
                     }
                 }
-                _ => return Err(DbError::NotFound(format!("active attestation {target}"))),
+                Some(other) => {
+                    return Err(DbError::Conflict(format!(
+                        "a {other} attestation cannot be revoked"
+                    )));
+                }
+                None => return Err(DbError::Conflict(format!("{target} is already revoked"))),
+            }
+        }
+        "rotate" => {
+            let n = sqlx::query(
+                "UPDATE private.keys SET status = 'rotated', successor_key_id = $2
+                  WHERE key_id = $1 AND status = 'active'",
+            )
+            .bind(a.issuer_key_id)
+            .bind(a.subject_key_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if n == 0 {
+                return Err(DbError::Conflict("issuer key is not active".into()));
+            }
+            // The new key carries the old key's strike state (no laundering).
+            sqlx::query(
+                "UPDATE private.keys n SET level_cap = o.level_cap, demoted_at = o.demoted_at,
+                   vouch_cooldown_until = o.vouch_cooldown_until
+                  FROM private.keys o WHERE o.key_id = $1 AND n.key_id = $2",
+            )
+            .bind(a.issuer_key_id)
+            .bind(a.subject_key_id)
+            .execute(&mut *tx)
+            .await?;
+            let moved: Vec<String> = sqlx::query_scalar(
+                "UPDATE public.vendor_bindings SET holder_key_id = $2
+                  WHERE holder_key_id = $1 AND revoked_at IS NULL
+                    AND (expires_at IS NULL OR expires_at > now()) RETURNING id",
+            )
+            .bind(a.issuer_key_id)
+            .bind(a.subject_key_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            for id in &moved {
+                add_change(&mut tx, "vendor_binding", id, "transfer").await?;
             }
         }
         other => {
@@ -693,6 +893,7 @@ pub async fn insert_attestation(pool: &PgPool, a: &NewAttestation<'_>) -> Result
             )));
         }
     }
+    recompute_trust(&mut tx, cfg.max_depth).await?;
     tx.commit().await?;
     Ok(Outcome::Accepted)
 }

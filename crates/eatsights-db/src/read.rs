@@ -315,12 +315,16 @@ pub async fn list_observations(pool: &PgPool, q: &ObservationQuery) -> Result<Pa
 pub async fn list_vendor_bindings(
     pool: &PgPool,
     place_id: Option<&str>,
+    include_inactive: bool,
     after: Option<&str>,
     limit: i64,
 ) -> Result<Page> {
-    let mut b = QueryBuilder::new(
-        "SELECT id, doc || jsonb_build_object('revoked', revoked_at IS NOT NULL) FROM public.vendor_bindings WHERE true",
-    );
+    let mut b = QueryBuilder::new(format!(
+        "SELECT id, {VENDOR_BINDING_DOC} FROM public.vendor_bindings WHERE true"
+    ));
+    if !include_inactive {
+        b.push(" AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())");
+    }
     if let Some(p) = place_id {
         b.push(" AND place_id = ").push_bind(p.to_owned());
     }
@@ -375,7 +379,7 @@ pub async fn export_docs(pool: &PgPool, table: &str) -> Result<Vec<Value>> {
         return Ok(Vec::new());
     }
     let sql = if table == "vendor_bindings" {
-        "SELECT doc || jsonb_build_object('revoked', revoked_at IS NOT NULL) FROM public.vendor_bindings ORDER BY id".to_owned()
+        format!("SELECT {VENDOR_BINDING_DOC} FROM public.vendor_bindings ORDER BY id")
     } else {
         format!("SELECT doc FROM public.{table}")
     };
@@ -389,3 +393,9 @@ pub async fn latest_seq(pool: &PgPool) -> Result<i64> {
             .await?,
     )
 }
+
+/// Public form of a vendor binding: the attestation without its signature, plus
+/// `revoked`, `active` and, after a rotation, the key now holding the binding.
+const VENDOR_BINDING_DOC: &str = "doc || jsonb_build_object('revoked', revoked_at IS NOT NULL,
+  'active', revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()))
+  || CASE WHEN holder_key_id <> subject_key_id THEN jsonb_build_object('holder_key_id', holder_key_id) ELSE '{}'::jsonb END";

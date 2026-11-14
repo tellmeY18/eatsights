@@ -13,8 +13,14 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 pub use sqlx::{PgPool, Postgres, Transaction};
 
 /// Forward-only migrations, embedded at build time. Add each new `migrations/NNNN_*.sql` here.
-const MIGRATIONS: &[(i64, &str, &str)] =
-    &[(1, "init", include_str!("../../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "init", include_str!("../../../migrations/0001_init.sql")),
+    (
+        2,
+        "trust",
+        include_str!("../../../migrations/0002_trust.sql"),
+    ),
+];
 
 #[derive(Debug)]
 struct Embedded;
