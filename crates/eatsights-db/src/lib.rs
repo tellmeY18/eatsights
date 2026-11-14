@@ -2,6 +2,7 @@
 //!
 //! Runtime `sqlx::query` only (no compile-time checked macros, so no offline data).
 
+pub mod export;
 pub mod read;
 pub mod work;
 pub mod write;
@@ -13,8 +14,14 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 pub use sqlx::{PgPool, Postgres, Transaction};
 
 /// Forward-only migrations, embedded at build time. Add each new `migrations/NNNN_*.sql` here.
-const MIGRATIONS: &[(i64, &str, &str)] =
-    &[(1, "init", include_str!("../../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (1, "init", include_str!("../../../migrations/0001_init.sql")),
+    (
+        3,
+        "exports",
+        include_str!("../../../migrations/0003_exports.sql"),
+    ),
+];
 
 #[derive(Debug)]
 struct Embedded;

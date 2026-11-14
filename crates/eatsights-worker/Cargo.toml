@@ -18,6 +18,10 @@ eatsights-core = { path = "../eatsights-core" }
 eatsights-db = { path = "../eatsights-db" }
 tokio = { version = "1", features = ["time", "sync", "macros"] }
 tracing = "0.1"
+flate2 = "1"
+sha2 = "0.10"
+thiserror = "2"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 proptest = "1"

@@ -1501,7 +1501,8 @@
         "tags": [
           "Feed"
         ],
-        "summary": "Change feed: every write in commit order. Sync with `after=<last seq>`.",
+        "summary": "Change feed: every public write in commit order, as `(seq, entity_type, entity_id, op, at)`.",
+        "description": "`seq` is global and strictly increasing. Page with `after=<next_after>` (default 0,\n`limit` default 50, max 500) until `items` is empty. Entity types: `place`, `section`,\n`menu_item`, `dish`, `observation`, `fact` (id `<scope>:<id>|<property>`), `menu`\n(pre-built menu of a place), `vendor_binding`, `key` (published keys), `registry` and\nothers added later;\nignore unknown types. Re-fetch the entity to get its new state.\n\nCheap by design: one index-only range scan on `seq` with a limit. To start, load the\nlatest snapshot from `GET /v1/export` and continue from `after=<changes_seq>`.",
         "parameters": [
           {
             "name": "after",
@@ -1609,27 +1610,16 @@
         "operationId": "changes"
       }
     },
-    "/v1/export/{name}": {
+    "/v1/export": {
       "get": {
         "tags": [
           "Feed"
         ],
-        "summary": "Bulk NDJSON snapshots. Not generated in the MVP (always 404).",
-        "parameters": [
-          {
-            "name": "name",
-            "schema": {
-              "type": "string"
-            },
-            "in": "path",
-            "required": true,
-            "deprecated": false,
-            "explode": true
-          }
-        ],
+        "summary": "Manifest of the latest public snapshot.",
+        "description": "Snapshots are written daily (and on demand with `eatsights export`) from one\nconsistent database snapshot. They contain public data only: places, sections,\nmenu_items, dishes, observations (public form), facts, vendor_of attestations\nand the registry, as gzip NDJSON, CC0-1.0.\n\n**Bootstrap a local copy:**\n1. `GET /v1/export`; remember `changes_seq`.\n2. Download every `files[].url` and check its `sha256`; load the NDJSON lines.\n3. Follow `GET /v1/changes?after=<changes_seq>` and keep paging with\n`after=<next_after>` until `items` is empty; re-fetch each changed entity.\nThe snapshot already contains everything up to and including `changes_seq`.",
         "responses": {
           "200": {
-            "description": "The document. Cacheable; weak `ETag` from the change sequence.",
+            "description": "The latest snapshot's manifest.",
             "content": {
               "application/json; charset=utf-8": {
                 "schema": {}
@@ -1649,24 +1639,11 @@
                 "schema": {
                   "type": "string"
                 }
-              },
-              "VARY": {
-                "required": true,
-                "deprecated": false,
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "CONTENT-ENCODING": {
-                "deprecated": false,
-                "schema": {
-                  "type": "string"
-                }
               }
             }
           },
           "304": {
-            "description": "Unchanged since the given `If-None-Match`.",
+            "description": "",
             "headers": {
               "ETAG": {
                 "required": true,
@@ -1684,10 +1661,84 @@
               }
             }
           },
-          "301": {
-            "description": "The record was merged; follow `Location` to the survivor.",
+          "default": {
+            "description": "Problem details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "export_manifest"
+      }
+    },
+    "/v1/export/{name}": {
+      "get": {
+        "tags": [
+          "Feed"
+        ],
+        "summary": "One file of the latest snapshot, e.g. `places.ndjson.gz` (or just `places`).\nServed as `application/gzip`; `ETag` is the file's SHA-256.",
+        "parameters": [
+          {
+            "name": "name",
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "required": true,
+            "deprecated": false,
+            "explode": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file, gzip NDJSON. Its `ETag` is the SHA-256 listed in the manifest.",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
             "headers": {
-              "LOCATION": {
+              "ETAG": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CACHE-CONTROL": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CONTENT-DISPOSITION": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "",
+            "headers": {
+              "ETAG": {
+                "required": true,
+                "deprecated": false,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "CACHE-CONTROL": {
                 "required": true,
                 "deprecated": false,
                 "schema": {

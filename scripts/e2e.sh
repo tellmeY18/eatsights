@@ -3,6 +3,8 @@
 #
 # Mode 1 (default): the script generates a root key, starts `eatsights serve` on $PORT
 #   (default 18080) against $DATABASE_URL (required), and stops it on exit.
+# Export checks run when EXPORT_DIR is set (mode 1 sets it to a temp dir that the server
+#   serves); mode 2 needs DATABASE_URL and the server's EATSIGHTS_EXPORT_DIR as EXPORT_DIR.
 # Mode 2: set BASE and ROOT_PRIVATE_KEY to test an already running server whose
 #   EATSIGHTS_ROOT_PUBLIC_KEY matches.
 #
@@ -38,8 +40,10 @@ if [ -z "${ROOT_PRIVATE_KEY:-}" ]; then
   ROOT="$("$BIN" keygen)"
   ROOT_PRIVATE_KEY="$(echo "$ROOT" | jq -r .private_key)"
   BASE="http://127.0.0.1:$PORT"
+  EXPORT_DIR="$TMP/exports"
   EATSIGHTS_ROOT_PUBLIC_KEY="$(echo "$ROOT" | jq -r .public_key)" \
   EATSIGHTS_PSEUDONYM_SALT="${EATSIGHTS_PSEUDONYM_SALT:-e2e-only-salt-0123456789abcdef0123456789}" \
+  EATSIGHTS_EXPORT_DIR="$EXPORT_DIR" \
   EATSIGHTS_LISTEN="127.0.0.1:$PORT" EATSIGHTS_POLL_MS=200 EATSIGHTS_WORKER_INTERVAL_SECS=1 \
     "$BIN" serve $([ "${E2E_MIGRATE:-1}" = 1 ] && echo --migrate) >"$TMP/server.log" 2>&1 &
   SERVER_PID=$!
@@ -156,6 +160,33 @@ ALL="$(for u in "/v1/places?cell=t9y" "/v1/places/$PL" "/v1/places/$PL/menu" "/v
 if echo "$ALL" | grep -q -e "$A_ID" -e "$B_ID" -e '"signature"'; then die "public responses leak key ids or signatures"; fi
 ok "no key ids or signatures in public responses"
 
+
+# ---- exports: snapshot, manifest checksums, privacy, bootstrap + change feed
+if [ -n "${EXPORT_DIR:-}" ]; then
+  "$BIN" export "$EXPORT_DIR" >/dev/null || die "eatsights export"
+  MAN="$(get /v1/export)"
+  check "export manifest" '(.files | length == 8) and (.changes_seq > 0) and .license == "CC0-1.0"' "$MAN"
+  SEQ="$(echo "$MAN" | jq -r .changes_seq)"
+  for NAME in $(echo "$MAN" | jq -r '.files[].name'); do
+    curl -sS -D "$TMP/x.h" -o "$TMP/$NAME" "$BASE/v1/export/$NAME"
+    grep -qi '^content-type: application/gzip' "$TMP/x.h" || die "$NAME content type"
+    SUM="$( (sha256sum "$TMP/$NAME" 2>/dev/null || shasum -a 256 "$TMP/$NAME") | cut -d' ' -f1)"
+    [ "$SUM" = "$(echo "$MAN" | jq -r ".files[] | select(.name == \"$NAME\") | .sha256")" ] || die "$NAME checksum"
+    [ "$(gunzip -c "$TMP/$NAME" | wc -l | tr -d ' ')" = "$(echo "$MAN" | jq -r ".files[] | select(.name == \"$NAME\") | .records")" ] || die "$NAME records"
+    if gunzip -c "$TMP/$NAME" | grep -q -e "$A_ID" -e "$B_ID" -e '"signature"'; then die "$NAME leaks key ids or signatures"; fi
+  done
+  ok "export files match manifest checksums and record counts"
+  ok "export contains no key ids or signatures"
+  gunzip -c "$TMP/observations.ndjson.gz" | jq -e -s "[.[].id] | index($(echo "$OA" | jq .id)) != null" >/dev/null || die "export lacks observation"
+  ok "export contains the observations"
+  CODE="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE/v1/export/..%2Flatest")"
+  [ "$CODE" = 404 ] || die "path traversal returned $CODE"
+  ok "export path traversal -> 404"
+  OC="$(obs "$A_ID" "$A_SK" 1700)"
+  R="$(echo "[$OC]" | post /v1/submissions)"; check "observation after the snapshot" '.results[0].status == "accepted"' "$R"
+  R="$(get "/v1/changes?after=$SEQ&limit=500")"
+  check "bootstrap: changes after manifest seq" "(.items | all(.seq > $SEQ)) and ([.items[].entity_id] | index($(echo "$OC" | jq .id)) != null) and (.items | map(.entity_id) | index($(echo "$OA" | jq .id)) == null)" "$R"
+fi
 # ---- caching
 curl -sS -D "$TMP/h1" -o /dev/null "$BASE/v1/places/$PL/menu"
 ETAG="$(grep -i '^etag:' "$TMP/h1" | cut -d' ' -f2- | tr -d '\r')"

@@ -33,3 +33,12 @@ Backups include the `private` schema; keep them encrypted and access-restricted.
 4. Record duration and data loss window in `docs/`.
 
 During an outage, the CDN keeps serving reads via `stale-if-error`.
+
+## Exports
+
+The worker writes public snapshots (gzip NDJSON + `manifest.json`, latest 7 kept) to `EATSIGHTS_EXPORT_DIR` (`/var/lib/eatsights/exports`) every `EATSIGHTS_EXPORT_INTERVAL_HOURS` (24); the API serves them at `/v1/export` from the same directory. Because the root filesystem is read-only, the directory is a volume:
+
+- `emptyDir` (default in `deployment.yaml`): simplest; a restarted pod writes a fresh snapshot at start-up. Fine for one replica running `api,worker`.
+- `PersistentVolumeClaim`: keeps snapshots across restarts. Required if the API and worker run as separate Deployments (`--roles`), since both must see the same directory (ReadWriteMany, or co-locate them).
+
+Size it at roughly 2× one snapshot × 7. Exports contain only `public` data and are safe to mirror to a CDN or object storage.

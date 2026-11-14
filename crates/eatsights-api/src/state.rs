@@ -29,6 +29,8 @@ pub struct ApiConfig {
     pub body_limit_bytes: usize,
     /// Serve Swagger UI at /docs. Off by default (AGENTS.md: no UI); see ADR-0005.
     pub swagger_ui: bool,
+    /// Directory the export worker writes snapshots into.
+    pub export_dir: std::path::PathBuf,
 }
 
 impl Default for ApiConfig {
@@ -47,6 +49,7 @@ impl Default for ApiConfig {
             request_timeout_secs: 10,
             body_limit_bytes: 1 << 20,
             swagger_ui: false,
+            export_dir: std::path::PathBuf::from(".dev/exports"),
         }
     }
 }

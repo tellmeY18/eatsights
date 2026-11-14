@@ -357,31 +357,6 @@ pub async fn changes(pool: &PgPool, after: i64, limit: i64) -> Result<Vec<Value>
         .collect())
 }
 
-/// Public tables included in exports.
-pub const EXPORT_TABLES: &[&str] = &[
-    "places",
-    "sections",
-    "dishes",
-    "menu_items",
-    "facts",
-    "observations",
-    "vendor_bindings",
-    "published_keys",
-];
-
-/// All `doc`s of one public table (whitelisted by [`EXPORT_TABLES`]).
-pub async fn export_docs(pool: &PgPool, table: &str) -> Result<Vec<Value>> {
-    if !EXPORT_TABLES.contains(&table) {
-        return Ok(Vec::new());
-    }
-    let sql = if table == "vendor_bindings" {
-        "SELECT doc || jsonb_build_object('revoked', revoked_at IS NOT NULL) FROM public.vendor_bindings ORDER BY id".to_owned()
-    } else {
-        format!("SELECT doc FROM public.{table}")
-    };
-    Ok(sqlx::query_scalar(&sql).fetch_all(pool).await?)
-}
-
 pub async fn latest_seq(pool: &PgPool) -> Result<i64> {
     Ok(
         sqlx::query_scalar("SELECT COALESCE(max(seq), 0) FROM public.changes")

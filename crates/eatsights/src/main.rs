@@ -1,6 +1,6 @@
 //! `eatsights`: the single binary (API, worker, migrations and tooling).
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
@@ -138,6 +138,7 @@ fn api_config() -> Result<ApiConfig, BoxError> {
         request_timeout_secs: env_num("EATSIGHTS_REQUEST_TIMEOUT_SECS", d.request_timeout_secs)?,
         body_limit_bytes: env_num("EATSIGHTS_BODY_LIMIT_BYTES", d.body_limit_bytes)?,
         swagger_ui: env_num("EATSIGHTS_SWAGGER_UI", d.swagger_ui)?,
+        export_dir: export_dir(),
     })
 }
 
@@ -194,6 +195,24 @@ async fn serve(roles: &str, migrate: bool) -> Result<(), BoxError> {
 
     let worker = if run_worker {
         let cfg = eatsights_worker::aggregate::AggConfig::from_env()?;
+        tokio::spawn(eatsights_worker::sweep::run(
+            db.clone(),
+            reg,
+            cfg.clone(),
+            Duration::from_secs(60 * env_num("EATSIGHTS_STALE_SWEEP_MINUTES", 15u64)?.max(1)),
+            stop_rx.clone(),
+        ));
+        tokio::spawn(eatsights_worker::export::run(
+            db.read.clone(),
+            eatsights_worker::export::ExportConfig {
+                dir: export_dir(),
+                interval: Duration::from_secs(
+                    3600 * env_num("EATSIGHTS_EXPORT_INTERVAL_HOURS", 24u64)?.max(1),
+                ),
+                keep: env_num("EATSIGHTS_EXPORT_KEEP", 7usize)?,
+            },
+            stop_rx.clone(),
+        ));
         Some(tokio::spawn(eatsights_worker::runner::run(
             db.clone(),
             reg,
@@ -311,32 +330,20 @@ async fn import(file: PathBuf) -> Result<(), BoxError> {
 
 async fn export(dir: PathBuf) -> Result<(), BoxError> {
     let db = connect().await?;
-    std::fs::create_dir_all(&dir)?;
-    let mut files = Vec::new();
-    for table in eatsights_db::read::EXPORT_TABLES {
-        let docs = eatsights_db::read::export_docs(&db.read, table).await?;
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        for d in &docs {
-            serde_json::to_writer(&mut enc, d)?;
-            enc.write_all(b"\n")?;
-        }
-        let bytes = enc.finish()?;
-        let name = format!("{table}.ndjson.gz");
-        std::fs::write(dir.join(&name), &bytes)?;
-        files.push(json!({ "name": name, "records": docs.len(), "sha256": crypto::sha256_hex(&bytes), "bytes": bytes.len() }));
-    }
-    let manifest = json!({
-        "generated_at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "license": "CC0-1.0",
-        "seq": eatsights_db::read::latest_seq(&db.read).await?,
-        "files": files,
-    });
-    std::fs::write(
-        dir.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    println!("{manifest}");
+    let m = eatsights_worker::export::write_snapshot(
+        &db.read,
+        &dir,
+        env_num("EATSIGHTS_EXPORT_KEEP", 7usize)?,
+    )
+    .await?;
+    println!("{}", serde_json::to_string(&m)?);
     Ok(())
+}
+
+fn export_dir() -> PathBuf {
+    env("EATSIGHTS_EXPORT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".dev/exports"))
 }
 
 async fn run(cli: Cli) -> Result<(), BoxError> {

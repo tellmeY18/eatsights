@@ -37,7 +37,12 @@ impl TestDb {
         let db = Db::connect(&format!("{base}/{name}"), None, 4)
             .await
             .unwrap();
-        db.migrate().await.unwrap();
+        // Migrations touch cluster-wide roles; run them one at a time.
+        static MIGRATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        {
+            let _g = MIGRATE.lock().await;
+            db.migrate().await.unwrap();
+        }
         Some(Self {
             db,
             admin_url: url,
@@ -511,5 +516,221 @@ async fn worker_is_idempotent_and_writes_are_checked() {
         .send()
         .await;
     r.assert_status(poem::http::StatusCode::PAYLOAD_TOO_LARGE);
+    w.t.drop().await;
+}
+
+fn gunzip_lines(bytes: &[u8]) -> Vec<Value> {
+    use std::io::Read;
+    let mut s = String::new();
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_string(&mut s)
+        .unwrap();
+    s.lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn exports_are_public_consistent_and_served() {
+    let Some((w, _)) = setup().await else {
+        eprintln!("TEST_DATABASE_URL unset; skipping");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("es_export_{}", ulid_lower()));
+    let reg = w.state.registry;
+    let entries: Vec<(String, Value)> = reg
+        .iter()
+        .filter_map(|p| reg.get_raw(&p.id).map(|r| (p.id.clone(), r.clone())))
+        .collect();
+    eatsights_db::write::sync_registry(&w.t.db.write, reg.version(), reg.hash(), &entries)
+        .await
+        .unwrap();
+    let mut cfg = w.state.cfg.clone();
+    cfg.export_dir = dir.clone();
+    let seq = Arc::new(AtomicI64::new(0));
+    let state = Arc::new(AppState::new(w.t.db.clone(), w.state.registry, cfg, seq));
+    let app = eatsights_api::app(state);
+    let cli = TestClient::new(&app);
+    cli.get("/v1/export")
+        .send()
+        .await
+        .assert_status(poem::http::StatusCode::NOT_FOUND);
+
+    let mut m = None;
+    for _ in 0..9 {
+        m = Some(
+            eatsights_worker::export::write_snapshot(&w.t.db.read, &dir, 7)
+                .await
+                .unwrap(),
+        );
+    }
+    let m = m.unwrap();
+    let snaps = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_type().unwrap().is_dir())
+        .count();
+    assert_eq!(snaps, 7, "keeps the latest 7 snapshots");
+    assert_eq!(
+        m.changes_seq,
+        eatsights_db::read::latest_seq(&w.t.db.read).await.unwrap()
+    );
+
+    let ids = [kid(&w.a), kid(&w.b), kid(&w.root)];
+    for f in &m.files {
+        let bytes = std::fs::read(dir.join(&m.snapshot).join(&f.name)).unwrap();
+        assert_eq!(bytes.len() as u64, f.bytes);
+        assert_eq!(crypto::sha256_hex(&bytes), f.sha256, "{}", f.name);
+        let lines = gunzip_lines(&bytes);
+        assert_eq!(lines.len() as u64, f.records, "{}", f.name);
+        let text = serde_json::to_string(&lines).unwrap();
+        assert!(!text.contains("\"signature\""), "{}", f.name);
+        for id in &ids {
+            assert!(!text.contains(id.as_str()), "{} leaks a key id", f.name);
+        }
+        let expect = match f.name.as_str() {
+            "places.ndjson.gz"
+            | "sections.ndjson.gz"
+            | "menu_items.ndjson.gz"
+            | "dishes.ndjson.gz"
+            | "facts.ndjson.gz" => 1,
+            "observations.ndjson.gz" => 2,
+            "vendor_of.ndjson.gz" => 0,
+            "registry.ndjson.gz" => 30,
+            other => panic!("unexpected file {other}"),
+        };
+        assert_eq!(f.records, expect, "{}", f.name);
+    }
+
+    let r = cli.get("/v1/export").send().await;
+    r.assert_status_is_ok();
+    let v: Value = serde_json::from_str(&r.0.into_body().into_string().await.unwrap()).unwrap();
+    assert_eq!(v["changes_seq"], m.changes_seq);
+    assert_eq!(v["files"].as_array().unwrap().len(), 8);
+
+    let r = cli.get("/v1/export/places").send().await;
+    r.assert_status_is_ok();
+    r.assert_content_type("application/gzip");
+    let etag =
+        r.0.headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+    let body = r.0.into_body().into_vec().await.unwrap();
+    assert_eq!(format!("\"{}\"", crypto::sha256_hex(&body)), etag);
+    assert_eq!(gunzip_lines(&body)[0]["id"], w.place);
+    cli.get("/v1/export/places.ndjson.gz")
+        .header("if-none-match", &etag)
+        .send()
+        .await
+        .assert_status(poem::http::StatusCode::NOT_MODIFIED);
+    for bad in ["manifest.json", "..%2Flatest", "%2E%2E", "keys", "latest"] {
+        cli.get(format!("/v1/export/{bad}"))
+            .send()
+            .await
+            .assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    w.t.drop().await;
+}
+
+#[tokio::test]
+async fn stale_sweep_ages_facts_without_new_observations() {
+    let Some((w, app)) = setup().await else {
+        eprintln!("TEST_DATABASE_URL unset; skipping");
+        return;
+    };
+    let db = &w.t.db;
+    let reg = Registry::embedded().unwrap();
+    let cfg = eatsights_worker::aggregate::AggConfig::default_config().unwrap();
+    let obs = |k: &SigningKey| {
+        sign(
+            json!({"id": ObservationId::new().as_str(), "schema_version": "0.3", "kind": "value",
+                   "property": "availability.observed",
+                   "subject": {"scope": "menu_item", "place_id": w.place, "menu_item_id": w.item},
+                   "value": {"state": "available"},
+                   "observed_at": now(), "submitted_at": now(), "method": "in_person",
+                   "source_type": "customer", "license": "CC0-1.0", "contributor": {"key_id": kid(k)}}),
+            k,
+        )
+    };
+    let r = post(&app, "/v1/submissions", json!([obs(&w.a), obs(&w.b)])).await;
+    assert_eq!(r["results"][1]["status"], "accepted", "{r}");
+    while eatsights_worker::runner::step(db, reg, &cfg).await.unwrap() > 0 {}
+    let status = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT doc->>'status' FROM public.facts WHERE property = 'availability.observed'",
+        )
+        .fetch_one(&db.read)
+        .await
+        .unwrap()
+    };
+    assert_ne!(status().await, "stale");
+
+    // Nothing is due now: no writes.
+    let s0 = eatsights_db::read::latest_seq(&db.read).await.unwrap();
+    assert_eq!(
+        eatsights_worker::sweep::sweep(db, reg, &cfg).await.unwrap(),
+        0
+    );
+    assert_eq!(eatsights_db::read::latest_seq(&db.read).await.unwrap(), s0);
+
+    // 7 h later (half-life 2 h, stale after 3 half-lives) the fact goes stale.
+    let later = Utc::now() + chrono::Duration::hours(7);
+    let n = eatsights_worker::sweep::sweep_at(db, reg, &cfg, later)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(status().await, "stale");
+    let s1 = eatsights_db::read::latest_seq(&db.read).await.unwrap();
+    assert!(s1 > s0);
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT entity_type FROM public.changes WHERE seq > $1 ORDER BY seq")
+            .bind(s0)
+            .fetch_all(&db.read)
+            .await
+            .unwrap();
+    assert_eq!(kinds, ["fact", "menu"]);
+
+    // Idempotent: a second pass finds nothing to do.
+    assert_eq!(
+        eatsights_worker::sweep::sweep_at(db, reg, &cfg, later)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(eatsights_db::read::latest_seq(&db.read).await.unwrap(), s1);
+    w.t.drop().await;
+}
+
+#[tokio::test]
+async fn change_feed_is_an_index_only_scan() {
+    let Some((w, _)) = setup().await else {
+        eprintln!("TEST_DATABASE_URL unset; skipping");
+        return;
+    };
+    let db = &w.t.db;
+    sqlx::query("VACUUM ANALYZE public.changes")
+        .execute(&db.write)
+        .await
+        .unwrap();
+    let mut c = db.read.acquire().await.unwrap();
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *c)
+        .await
+        .unwrap();
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT seq, entity_type, entity_id, op, at FROM public.changes WHERE seq > 3 ORDER BY seq LIMIT 50",
+    )
+    .fetch_all(&mut *c)
+    .await
+    .unwrap();
+    drop(c);
+    assert!(
+        plan.iter()
+            .any(|l| l.contains("Index Only Scan using changes_feed")),
+        "{plan:?}"
+    );
     w.t.drop().await;
 }
