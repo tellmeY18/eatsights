@@ -154,8 +154,12 @@ pub async fn step(db: &Db, registry: &Registry, cfg: &AggConfig) -> Result<usize
     };
     let now = Utc::now();
     let mut obs_ids = Vec::new();
+    let mut merged: BTreeSet<String> = BTreeSet::new();
     let mut places: BTreeSet<String> = BTreeSet::new();
     for c in &changes {
+        if matches!(c.op.as_str(), "merge" | "unmerge") {
+            merged.insert(format!("{}:{}", c.entity_type, c.entity_id));
+        }
         match c.entity_type.as_str() {
             "observation" => obs_ids.push(c.entity_id.clone()),
             "place" => {
@@ -174,6 +178,9 @@ pub async fn step(db: &Db, registry: &Registry, cfg: &AggConfig) -> Result<usize
         if let Some(p) = recompute(db, registry, cfg, subject_key, property, now).await? {
             places.insert(p);
         }
+    }
+    for key in &merged {
+        places.extend(crate::merge::recompute_subject(db, registry, cfg, key, now).await?);
     }
     for p in &places {
         rebuild_menu(db, p, now).await?;

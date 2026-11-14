@@ -18,6 +18,11 @@ eatsights-core = { path = "../eatsights-core" }
 eatsights-db = { path = "../eatsights-db" }
 tokio = { version = "1", features = ["time", "sync", "macros"] }
 tracing = "0.1"
+thiserror = "2"
+# OSM checker HTTP client (rustls + ring, already in the tree via sqlx; no OpenSSL).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 proptest = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }

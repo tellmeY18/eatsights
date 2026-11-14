@@ -52,6 +52,11 @@ enum Cmd {
     Import { file: PathBuf },
     /// Write gzip NDJSON snapshots of the public tables and a manifest.
     Export { dir: PathBuf },
+    /// Duplicate suggestions (private; for the maintainer).
+    Dedupe {
+        #[command(subcommand)]
+        cmd: DedupeCmd,
+    },
     /// Print the OpenAPI document.
     Openapi,
     /// Sign a JSON object from stdin with a private key (development/e2e helper).
@@ -68,6 +73,18 @@ enum Cmd {
     Pubkey {
         #[arg(long, env = "EATSIGHTS_SIGNING_KEY")]
         key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DedupeCmd {
+    /// Print suggestions as NDJSON (best first).
+    List {
+        /// open, confirmed or dismissed (default: open).
+        #[arg(long, default_value = "open")]
+        status: String,
+        #[arg(long, default_value_t = 100)]
+        limit: i64,
     },
 }
 
@@ -194,13 +211,15 @@ async fn serve(roles: &str, migrate: bool) -> Result<(), BoxError> {
 
     let worker = if run_worker {
         let cfg = eatsights_worker::aggregate::AggConfig::from_env()?;
+        let interval = Duration::from_secs(env_num("EATSIGHTS_WORKER_INTERVAL_SECS", 30u64)?);
+        spawn_m5_workers(&db, &seq_rx, &stop_rx, interval)?;
         Some(tokio::spawn(eatsights_worker::runner::run(
             db.clone(),
             reg,
             cfg,
             seq_rx,
             stop_rx.clone(),
-            Duration::from_secs(env_num("EATSIGHTS_WORKER_INTERVAL_SECS", 30u64)?),
+            interval,
         )))
     } else {
         None
@@ -234,6 +253,50 @@ async fn serve(roles: &str, migrate: bool) -> Result<(), BoxError> {
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), tracker).await;
     db.write.close().await;
+    Ok(())
+}
+
+/// Duplicate detector and `ready_to_map` (always), OSM checker (only with an endpoint).
+fn spawn_m5_workers(
+    db: &Db,
+    seq_rx: &watch::Receiver<i64>,
+    stop_rx: &watch::Receiver<bool>,
+    interval: Duration,
+) -> Result<(), BoxError> {
+    use eatsights_worker::{dedupe, osm};
+    tokio::spawn(dedupe::run(
+        db.clone(),
+        dedupe::DedupeConfig::default(),
+        seq_rx.clone(),
+        stop_rx.clone(),
+        interval,
+    ));
+    tokio::spawn(osm::run_ready(
+        db.clone(),
+        seq_rx.clone(),
+        stop_rx.clone(),
+        interval,
+    ));
+    if let Some(endpoint) = env("EATSIGHTS_OSM_ENDPOINT") {
+        let mut cfg = osm::OsmConfig::new(endpoint);
+        cfg.recheck_days = env_num("EATSIGHTS_OSM_RECHECK_DAYS", cfg.recheck_days)?;
+        tokio::spawn(osm::run(db.clone(), cfg, stop_rx.clone()));
+    }
+    Ok(())
+}
+
+async fn dedupe_list(status: Option<String>, limit: i64) -> Result<(), BoxError> {
+    let db = connect().await?;
+    for s in eatsights_db::osm::list_suggestions(&db.write, status.as_deref(), limit).await? {
+        println!(
+            "{}",
+            json!({
+                "id": s.id, "entity_type": s.entity_type, "a_id": s.a_id, "b_id": s.b_id,
+                "score": s.score, "distance_m": s.distance_m, "status": s.status,
+                "created_at": s.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            })
+        );
+    }
     Ok(())
 }
 
@@ -373,6 +436,9 @@ async fn run(cli: Cli) -> Result<(), BoxError> {
         }
         Cmd::Import { file } => import(file).await,
         Cmd::Export { dir } => export(dir).await,
+        Cmd::Dedupe {
+            cmd: DedupeCmd::List { status, limit },
+        } => dedupe_list((status != "all").then_some(status), limit).await,
         Cmd::Openapi => {
             println!("{}", eatsights_api::openapi_json());
             Ok(())

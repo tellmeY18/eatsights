@@ -1,3 +1,5 @@
+eatsights dev shell: rustc 1.90.0 (1159e78c4 2025-09-14)
+  pg-start / pg-stop   local Postgres + PostGIS
 {
   "openapi": "3.0.0",
   "info": {
@@ -14,6 +16,10 @@
     }
   ],
   "tags": [
+    {
+      "name": "Admin",
+      "description": "Actions signed by the root or a verifier key."
+    },
     {
       "name": "Data",
       "description": "Places, menus, dishes and facts."
@@ -1836,10 +1842,151 @@
         },
         "operationId": "entities"
       }
+    },
+    "/v1/admin/osm-links": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Confirm an OSM object for a place (`action: \"link_osm\"`, params `place_id`, `osm_id`\nsuch as `node/123`). The place becomes `linked` with `verified_at`. People confirm;\nthe system never links on its own.",
+        "requestBody": {
+          "content": {
+            "application/json; charset=utf-8": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or already applied).",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "admin_osm_link"
+      }
+    },
+    "/v1/admin/merges": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Merges. `action: \"merge\"` with params `entity_type` (`place` default, or `menu_item`)\nand either `a_id` + `b_id` or `suggestion_id`; optional `survivor_id` (default: the\nOSM-linked record, else the older). `action: \"unmerge\"` with `entity_type`, `id`.\n`action: \"dismiss\"` with `suggestion_id`. Nothing is deleted.",
+        "requestBody": {
+          "content": {
+            "application/json; charset=utf-8": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or already applied).",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "admin_merges"
+      }
+    },
+    "/v1/admin/removals": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Legal or safety removal of an observation (`action: \"remove_observation\"`, params\n`observation_id`, `reason`: `legal` or `safety`). The content is replaced by a\ntombstone; the public removal log holds only the id and the reason code.",
+        "requestBody": {
+          "content": {
+            "application/json; charset=utf-8": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Applied (or already applied).",
+            "content": {
+              "application/json; charset=utf-8": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "admin_removals"
+      }
     }
   },
   "components": {
     "schemas": {
+      "AdminResult": {
+        "type": "object",
+        "title": "AdminResult",
+        "description": "Result of an admin action.",
+        "required": [
+          "id",
+          "action",
+          "status",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`accepted` or `duplicate` (the same signed object was applied before)."
+          },
+          "result": {}
+        }
+      },
       "BatchResult": {
         "type": "object",
         "title": "BatchResult",
