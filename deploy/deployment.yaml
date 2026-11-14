@@ -37,3 +37,10 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: exports, mountPath: /var/lib/eatsights/exports }
+      volumes:
+        # emptyDir: snapshots are regenerated on start when missing or older than the interval.
+        # Use a PersistentVolumeClaim instead to keep them across restarts (see README.md).
+        - name: exports
+          emptyDir: { sizeLimit: 2Gi }

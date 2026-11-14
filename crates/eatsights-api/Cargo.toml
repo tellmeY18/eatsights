@@ -12,9 +12,10 @@ workspace = true
 [dependencies]
 eatsights-core = { path = "../eatsights-core" }
 eatsights-db = { path = "../eatsights-db" }
+eatsights-worker = { path = "../eatsights-worker" }
 poem = "3"
 poem-openapi = { version = "5", features = ["swagger-ui"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
@@ -27,7 +28,6 @@ thiserror = "2"
 sqlx = { version = "0.8", default-features = false, features = ["postgres"] }
 
 [dev-dependencies]
-eatsights-worker = { path = "../eatsights-worker" }
 poem = { version = "3", features = ["test"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }

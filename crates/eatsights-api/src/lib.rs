@@ -1,5 +1,6 @@
 //! Eatsights HTTP API: Poem + poem-openapi.
 
+pub mod exports;
 pub mod problem;
 pub mod reads;
 pub mod state;
@@ -19,9 +20,11 @@ use tokio::sync::watch;
 
 pub use state::{ApiConfig, AppState, Cidr};
 
-fn service(base_url: &str) -> OpenApiService<(reads::ReadApi, writes::WriteApi), ()> {
+fn service(
+    base_url: &str,
+) -> OpenApiService<(reads::ReadApi, exports::ExportApi, writes::WriteApi), ()> {
     OpenApiService::new(
-        (reads::ReadApi, writes::WriteApi),
+        (reads::ReadApi, exports::ExportApi, writes::WriteApi),
         "Eatsights API",
         env!("CARGO_PKG_VERSION"),
     )

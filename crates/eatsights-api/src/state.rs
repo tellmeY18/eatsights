@@ -31,6 +31,8 @@ pub struct ApiConfig {
     pub swagger_ui: bool,
     /// Trust policy numbers (ADR-0006).
     pub trust: eatsights_core::trust::TrustConfig,
+    /// Directory the export worker writes snapshots into.
+    pub export_dir: std::path::PathBuf,
 }
 
 impl Default for ApiConfig {
@@ -50,6 +52,7 @@ impl Default for ApiConfig {
             body_limit_bytes: 1 << 20,
             swagger_ui: false,
             trust: eatsights_core::trust::TrustConfig::default(),
+            export_dir: std::path::PathBuf::from(".dev/exports"),
         }
     }
 }

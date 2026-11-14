@@ -2,6 +2,7 @@
 //!
 //! Runtime `sqlx::query` only (no compile-time checked macros, so no offline data).
 
+pub mod export;
 pub mod read;
 pub mod work;
 pub mod write;
@@ -19,6 +20,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         2,
         "trust",
         include_str!("../../../migrations/0002_trust.sql"),
+    ),
+    (
+        3,
+        "exports",
+        include_str!("../../../migrations/0003_exports.sql"),
     ),
 ];
 

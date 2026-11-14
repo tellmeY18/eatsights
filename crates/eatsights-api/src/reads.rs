@@ -641,7 +641,17 @@ impl ReadApi {
         .await
     }
 
-    /// Change feed: every write in commit order. Sync with `after=<last seq>`.
+    /// Change feed: every public write in commit order, as `(seq, entity_type, entity_id, op, at)`.
+    ///
+    /// `seq` is global and strictly increasing. Page with `after=<next_after>` (default 0,
+    /// `limit` default 50, max 500) until `items` is empty. Entity types: `place`, `section`,
+    /// `menu_item`, `dish`, `observation`, `fact` (id `<scope>:<id>|<property>`), `menu`
+    /// (pre-built menu of a place), `vendor_binding`, `key` (published keys), `registry` and
+    /// others added later;
+    /// ignore unknown types. Re-fetch the entity to get its new state.
+    ///
+    /// Cheap by design: one index-only range scan on `seq` with a limit. To start, load the
+    /// latest snapshot from `GET /v1/export` and continue from `after=<changes_seq>`.
     #[oai(
         path = "/changes",
         method = "get",
@@ -668,16 +678,5 @@ impl ReadApi {
             Ok(json!({ "items": items, "next_after": next }))
         })
         .await
-    }
-
-    /// Bulk NDJSON snapshots. Not generated in the MVP (always 404).
-    #[oai(
-        path = "/export/:name",
-        method = "get",
-        tag = "ApiTags::Feed",
-        operation_id = "export"
-    )]
-    async fn export(&self, name: Path<String>) -> Result<ReadResp, ProblemResp> {
-        Err(ProblemResp::not_found(&format!("export {}", name.0)))
     }
 }
