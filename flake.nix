@@ -93,8 +93,8 @@
           shellHook = ''
             export DATABASE_URL="''${DATABASE_URL:-postgres://eatsights@127.0.0.1:5432/eatsights}"
             export RUST_BACKTRACE=1
-            echo "eatsights dev shell: $(rustc --version)"
-            echo "  pg-start / pg-stop   local Postgres + PostGIS"
+            echo "eatsights dev shell: $(rustc --version)" >&2
+            echo "  pg-start / pg-stop   local Postgres + PostGIS" >&2
           '';
         };
 
