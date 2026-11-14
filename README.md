@@ -24,3 +24,8 @@ Without Nix: `docker compose up -d db`, or the whole stack with `docker compose 
 ## Layout
 
 `crates/` (core, db, api, worker, binary) · `migrations/` · `deploy/` (Kubernetes) · `docs/adr/` · `docs/proposals/`
+
+## Licence
+
+- **Code** (everything in this repository except the data and schema files below): [GNU AGPL-3.0-or-later](LICENSE). If you run a modified version as a network service, you must offer its source to its users.
+- **Data** served by the API, exports, and the contract files `schema.json`, `property.schema.json`, `properties.json`: [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) (see `GOVERNANCE.md`).

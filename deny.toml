@@ -29,6 +29,10 @@ allow = [
 ]
 confidence-threshold = 0.9
 
+# Our own crates are unpublished (publish = false) and AGPL-3.0-or-later.
+[licenses.private]
+ignore = true
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
