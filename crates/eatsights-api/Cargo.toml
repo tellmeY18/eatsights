@@ -29,5 +29,5 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres"] }
 
 [dev-dependencies]
 poem = { version = "3", features = ["test"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }

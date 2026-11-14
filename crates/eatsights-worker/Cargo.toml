@@ -21,7 +21,10 @@ tracing = "0.1"
 flate2 = "1"
 sha2 = "0.10"
 thiserror = "2"
+# OSM checker HTTP client (rustls + ring, already in the tree via sqlx; no OpenSSL).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 proptest = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }

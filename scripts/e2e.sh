@@ -288,4 +288,50 @@ CODE="$(curl -sS -o "$TMP/nf.json" -D "$TMP/nf.h" -w '%{http_code}' "$BASE/v1/pl
 [ "$CODE" = 404 ] && grep -qi 'application/problem+json' "$TMP/nf.h" || die "404 is not problem+json"
 ok "404 problem+json"
 
+# ---- M5: signed admin actions (merge, undo, removal)
+admin() { # admin <action> <params json>
+  jq -n --arg id "$(newid es_)" --arg a "$1" --argjson p "$2" --arg t "$(now)" --arg i "$ROOT_KEY_ID" \
+    '{id:$id,action:$a,params:$p,issued_at:$t,issuer_key_id:$i}' | sign "$ROOT_PRIVATE_KEY"
+}
+code_of() { curl -sS -o "$TMP/out.json" -w '%{http_code}' "$@"; }
+PL2="$(newid pl_)"
+R="$(es place "{\"id\":\"$PL2\",\"names\":{\"en\":\"E2E Chaya Kada\"},\"category\":\"tea_stall\",\"location\":{\"lat\":$LAT,\"lng\":$LNG},\"city\":\"ernakulam\"}" | jq -s . | post /v1/entities)"
+check "create a duplicate place" '.results[0].status == "accepted"' "$R"
+R="$(admin merge "{\"a_id\":\"$PL2\",\"b_id\":\"$PL\"}" | post /v1/admin/merges)"
+check "admin merge (older record survives)" ".status == \"accepted\" and .result.merged == \"$PL2\" and .result.merged_into == \"$PL\"" "$R"
+R="$(jq -n --arg id "$(newid es_)" --arg p "$PL2" --arg t "$(now)" --arg i "$A_ID" \
+  '{id:$id,action:"unmerge",params:{id:$p},issued_at:$t,issuer_key_id:$i}' | sign "$A_SK" | post /v1/admin/merges)"
+check "admin action by a member key is forbidden" '.status == 403' "$R"
+LOC=""
+for _ in $(seq 1 50); do
+  LOC="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "$BASE/v1/places/$PL2")"
+  [ "$LOC" = "301 $BASE/v1/places/$PL" ] && break
+  sleep 0.1
+done
+[ "$LOC" = "301 $BASE/v1/places/$PL" ] || die "merged place did not redirect: $LOC"
+ok "GET merged place -> 301 to survivor"
+R="$(admin unmerge "{\"id\":\"$PL2\"}" | post /v1/admin/merges)"
+check "admin undo merge" ".status == \"accepted\" and .result.unmerged == \"$PL2\"" "$R"
+CODE=""
+for _ in $(seq 1 50); do
+  CODE="$(code_of "$BASE/v1/places/$PL2")"
+  [ "$CODE" = 200 ] && break
+  sleep 0.1
+done
+[ "$CODE" = 200 ] || die "unmerged place returned $CODE"
+check "unmerged place is active again" '.record_state == "active" and (has("merged_into") | not)' "$(cat "$TMP/out.json")"
+OA_ID="$(echo "$OA" | jq -r .id)"
+REM="$(admin remove_observation "{\"observation_id\":\"$OA_ID\",\"reason\":\"legal\"}")"
+R="$(echo "$REM" | post /v1/admin/removals)"
+check "admin removal" '.status == "accepted" and .result.reason == "legal"' "$R"
+R="$(echo "$REM" | post /v1/admin/removals)"
+check "replayed removal is a duplicate" '.status == "duplicate"' "$R"
+R=""
+for _ in $(seq 1 50); do
+  R="$(get "/v1/observations?menu_item_id=$MI")"
+  echo "$R" | jq -e "[.items[] | select(.id == \"$OA_ID\")][0].redacted == true" >/dev/null 2>&1 && break
+  sleep 0.1
+done
+check "removed observation is a tombstone" "[.items[] | select(.id == \"$OA_ID\")][0] | .redacted == true and (has(\"value\") | not)" "$R"
+
 echo "e2e: all checks passed"

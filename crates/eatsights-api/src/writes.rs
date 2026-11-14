@@ -116,7 +116,7 @@ fn db_problem(e: DbError) -> Problem {
 }
 
 impl AppState {
-    fn ip(&self, req: &Request) -> Option<IpAddr> {
+    pub(crate) fn ip(&self, req: &Request) -> Option<IpAddr> {
         let peer = req.remote_addr().as_socket_addr().map(|a| a.ip());
         let xff = req
             .headers()
@@ -125,7 +125,7 @@ impl AppState {
         client_ip(peer, xff, &self.cfg.trusted_proxies)
     }
 
-    fn check_ip(&self, ip: Option<IpAddr>) -> Result<(), ProblemResp> {
+    pub(crate) fn check_ip(&self, ip: Option<IpAddr>) -> Result<(), ProblemResp> {
         match ip {
             Some(ip) if self.limit_ip.check_key(&ip).is_err() => Err(ProblemResp::new(p(
                 429,
