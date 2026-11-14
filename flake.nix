@@ -1,5 +1,5 @@
 {
-  description = "Eatsights dev shell: pinned Rust, Postgres + PostGIS, schema and API tooling";
+  description = "Eatsights: package, NixOS module and dev shell (pinned Rust, Postgres 18, tooling)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -11,7 +11,19 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    {
+      # NixOS: imports = [ eatsights.nixosModules.default ]; services.eatsights.enable = true;
+      nixosModules.default = { lib, pkgs, ... }: {
+        imports = [ ./nix/module.nix ];
+        services.eatsights.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      };
+      nixosModules.eatsights = self.nixosModules.default;
+
+      overlays.default = final: _prev: {
+        eatsights = self.packages.${final.stdenv.hostPlatform.system}.default;
+      };
+    }
+    // flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -20,6 +32,8 @@
 
         # Single source of truth for the toolchain version: rust-toolchain.toml.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        rustPlatform = pkgs.makeRustPlatform { cargo = rustToolchain; rustc = rustToolchain; };
+        eatsights = pkgs.callPackage ./nix/package.nix { inherit rustPlatform; };
 
         postgres = pkgs.postgresql_18.withPackages (ps: [ ps.postgis ]);
 
@@ -43,6 +57,14 @@
         '';
       in
       {
+        packages.default = eatsights;
+        packages.eatsights = eatsights;
+
+        checks = { package = eatsights; }
+          // nixpkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            vm = import ./nix/tests/vm.nix { inherit self pkgs; };
+          };
+
         devShells.default = pkgs.mkShell {
           packages = [
             rustToolchain
