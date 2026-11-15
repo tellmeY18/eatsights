@@ -93,14 +93,26 @@ const meals = P('Station Meals Hotel', 'ഡെമോ · സ്റ്റേഷൻ
 const juice = P('Marine Drive Juice Corner', null, 'juice_shop', 'ernakulam', 9.9819, 76.2763);
 const cafe = P('Rooftop Cafe', null, 'cafe', 'ernakulam', 9.9640, 76.2427);
 const cart = P('Empty Cart', null, 'street_cart', 'ernakulam', 10.0159, 76.3419);
+// A quiet rural pin with confirmed existence: if OSM has nothing nearby it becomes ready_to_map.
+const village = P('Village Tea Shop', 'ഡെമോ · ഗ്രാമ ചായക്കട', 'tea_stall', 'kottayam', 9.6412, 76.4730);
 const canteen = P('Campus Canteen', 'ഡെമോ · കാമ്പസ് കാന്റീൻ', 'canteen', 'thrissur', 10.5276, 76.2144);
 const bakery = P('Beach Bakery', null, 'bakery', 'kozhikode', 11.2588, 75.7804);
 const dupe = { ...P('Kaloor Chaya Kada', null, 'tea_stall', 'ernakulam', 9.9972, 76.3008) };
 
 // Dishes (shared across places) with dish-level facts.
-const dTea = { id: es.ulid('di_'), labels: { en: D('Tea'), ml: 'ചായ' }, kind: 'beverage' };
-const dPori = { id: es.ulid('di_'), labels: { en: D('Pazham pori'), ml: 'പഴംപൊരി' }, kind: 'snack' };
-const dMeals = { id: es.ulid('di_'), labels: { en: D('Kerala meals'), ml: 'ഊണ്' }, kind: 'dish' };
+// Wikidata links: only the Q-id is stored; labels, articles and images are read from Wikidata.
+const today = new Date().toISOString().slice(0, 10);
+const wd = (id, status) => ({ id, status, ...(status === 'verified' ? { verified_at: today } : {}) });
+const dTea = { id: es.ulid('di_'), labels: { en: D('Tea'), ml: 'ചായ' }, kind: 'beverage', wikidata: wd('Q6097', 'verified') };
+const dPori = { id: es.ulid('di_'), labels: { en: D('Pazham pori'), ml: 'പഴംപൊരി' }, kind: 'snack', wikidata: wd('Q13113151', 'verified') };
+const dVada = { id: es.ulid('di_'), labels: { en: D('Uzhunnu vada'), ml: 'ഉഴുന്നുവട' }, aliases: [{ en: 'Medu vada' }], kind: 'snack', wikidata: wd('Q25302803', 'verified') };
+const dPorotta = { id: es.ulid('di_'), labels: { en: D('Porotta'), ml: 'പൊറോട്ട' }, aliases: [{ en: 'Parotta' }], kind: 'dish', wikidata: wd('Q1897149', 'verified') };
+// Close but not exact (Sadya is a feast; everyday meals are smaller): unverified.
+const dMeals = { id: es.ulid('di_'), labels: { en: D('Kerala meals'), ml: 'ഊണ്' }, kind: 'dish', wikidata: wd('Q3595351', 'unverified') };
+// A link that no longer resolves, to show the third state.
+const dHalwa = { id: es.ulid('di_'), labels: { en: D('Kozhikodan halwa'), ml: 'ഹൽവ' }, kind: 'sweet', wikidata: wd('Q999999999', 'broken') };
+// No Wikidata item yet: the link is optional.
+const dPuffs = { id: es.ulid('di_'), labels: { en: D('Egg puffs') }, kind: 'snack' };
 
 const S = (place, en, kind, sort, parent) => ({ id: es.ulid('sc_'), place_id: place.id, labels: { en }, kind, sort, ...(parent ? { parent_section_id: parent.id } : {}) });
 const I = (place, sec, en, ml, extra = {}) => ({ id: es.ulid('mi_'), place_id: place.id, section_id: sec.id, labels: { en, ...(ml ? { ml } : {}) }, ...extra });
@@ -112,7 +124,7 @@ const tea = I(kada, kHot, 'Tea', 'ചായ', { dish_id: dTea.id, variant: { siz
 const teaL = I(kada, kHot, 'Tea', 'ചായ', { dish_id: dTea.id, variant: { size: 'large' } });
 const coffee = I(kada, kHot, 'Filter coffee', 'കാപ്പി');
 const pori = I(kada, kSnacks, 'Pazham pori', 'പഴംപൊരി', { dish_id: dPori.id });
-const vada = I(kada, kSnacks, 'Uzhunnu vada', 'ഉഴുന്നുവട');
+const vada = I(kada, kSnacks, 'Uzhunnu vada', 'ഉഴുന്നുവട', { dish_id: dVada.id });
 
 const mMain = S(meals, 'Meals', 'meals', 1);
 const thali = I(meals, mMain, 'Kerala meals (thali)', 'ഊണ്', { dish_id: dMeals.id, variant: { size: 'full' } });
@@ -126,15 +138,15 @@ const lime = I(juice, jMain, 'Fresh lime soda', null);
 const cMain = S(cafe, 'Coffee', 'drinks', 1);
 const cappu = I(cafe, cMain, 'Cappuccino', null);
 const caMain = S(canteen, 'Counter', 'meals', 1);
-const porotta = I(canteen, caMain, 'Porotta + egg curry', 'പൊറോട്ട');
+const porotta = I(canteen, caMain, 'Porotta + egg curry', 'പൊറോട്ട', { dish_id: dPorotta.id });
 const caTea = I(canteen, caMain, 'Tea', 'ചായ', { dish_id: dTea.id });
 const bMain = S(bakery, 'Bakes', 'snacks', 1);
-const puffs = I(bakery, bMain, 'Egg puffs', null);
-const halwa = I(bakery, bMain, 'Kozhikodan halwa', 'ഹൽവ', { variant: { size: 'half', label: { en: '250 g' } } });
+const puffs = I(bakery, bMain, 'Egg puffs', null, { dish_id: dPuffs.id });
+const halwa = I(bakery, bMain, 'Kozhikodan halwa', 'ഹൽവ', { dish_id: dHalwa.id, variant: { size: 'half', label: { en: '250 g' } } });
 
 await entities(m1, [
-  ['place', kada], ['place', meals], ['place', juice], ['place', cafe], ['place', cart], ['place', canteen], ['place', bakery],
-  ['dish', dTea], ['dish', dPori], ['dish', dMeals],
+  ['place', kada], ['place', meals], ['place', juice], ['place', cafe], ['place', cart], ['place', canteen], ['place', bakery], ['place', village],
+  ...[dTea, dPori, dVada, dPorotta, dMeals, dHalwa, dPuffs].map((d) => ['dish', d]),
   ...[kDrinks, kHot, kSnacks, mMain, mDrinks, jMain, cMain, caMain, bMain].map((s) => ['section', s]),
   ...[tea, teaL, coffee, pori, vada, thali, fishMeals, biryani, mango, lime, cappu, porotta, caTea, puffs, halwa].map((i) => ['menu_item', i]),
 ]);
@@ -236,6 +248,11 @@ await obs(m2, sm(puffs), 'price.amount', price(20));
 const removed = await obs(u2, sm(halwa), 'price.amount', price(400));
 await obs(m3, sm(halwa), 'price.amount', price(220));
 
+// ---- Village tea shop: existence confirmed by independent people (feeds ready_to_map)
+await obs(m1, sp(village), 'status.operating', { state: 'active' });
+await obs(m2, sp(village), 'status.operating', { state: 'active' });
+await obs(m3, sp(village), 'status.operating', { state: 'active' });
+
 // ---- the duplicate stall gets one report before it is merged
 await obs(u1, sp(dupe), 'status.operating', { state: 'active' });
 
@@ -248,6 +265,28 @@ const merge = await admin(root, 'merge', { a_id: dupe.id, b_id: kada.id });
 console.log('merged', merge.result?.merged, '->', merge.result?.merged_into);
 await admin(root, 'remove_observation', { observation_id: removed.id, reason: 'legal' });
 console.log('removed observation', removed.id);
+
+// ---- OSM: the checker (worker, opt-in via EATSIGHTS_OSM_ENDPOINT) searches around each pin and
+// stores only state, candidate ids, distances and name scores. Wait for it, then a person (root)
+// confirms one candidate. People link; the system never links on its own.
+const placeOf = async (p) => (await api.get(`/v1/places/${p.id}`)).body;
+const allPlaces = [kada, meals, juice, cafe, cart, canteen, bakery, village];
+let osmLinked = null;
+for (let i = 0; i < 60; i++) {
+  const docs = await Promise.all(allPlaces.map(placeOf));
+  const pending = docs.filter((d) => d?.osm?.state === 'unchecked').length;
+  if (!pending) {
+    const cand = docs.find((d) => d.id === cafe.id && d.osm.state === 'candidate') || docs.find((d) => d.osm.state === 'candidate' && d.id !== kada.id);
+    if (cand) {
+      await admin(root, 'link_osm', { place_id: cand.id, osm_id: cand.osm.candidates[0].id });
+      osmLinked = `${cand.names.en} -> ${cand.osm.candidates[0].id}`;
+    }
+    break;
+  }
+  if (i % 6 === 0) console.log(`OSM checker: ${pending} place(s) still unchecked…`);
+  await sleep(5000);
+}
+console.log('OSM linked (demo link):', osmLinked || 'none (checker off or no candidates)');
 
 // ---- wait for the worker, then print what each case became
 await sleep(4000);
@@ -274,6 +313,11 @@ await show('Canteen porotta availability (10 h old)', `menu_item_id=${porotta.id
 await show('Canteen queue (3 h old)', `place_id=${canteen.id}`, 'queue.length');
 await show('Canteen tea (trusted tips 10 vs 12)', `menu_item_id=${caTea.id}`, 'price.amount');
 await show('Tea dish diet (dish scope)', `dish_id=${dTea.id}`, 'dish.diet');
+for (const p of allPlaces) {
+  const d = await placeOf(p);
+  const o = d.osm || {};
+  console.log(('OSM ' + p.names.en).padEnd(44), o.state, o.id || '', o.candidates ? `${o.candidates.length} candidate(s)` : '', o.ready_to_map ? 'ready_to_map' : '');
+}
 const redirect = await fetch(`${base}/v1/places/${dupe.id}`, { redirect: 'manual' });
 console.log('Duplicate place'.padEnd(44), redirect.status, redirect.headers.get('location'));
-console.log('done. Places:', [kada, meals, juice, cafe, cart, canteen, bakery].map((p) => `${p.names.en} ${p.id}`).join('\n  '));
+console.log('done. Places:', allPlaces.map((p) => `${p.names.en} ${p.id}`).join('\n  '));

@@ -140,7 +140,9 @@ Also note:
 
 - `EATSIGHTS_SWAGGER_UI` stays `false` in production (ADR-0005).
 - `EATSIGHTS_OSM_ENDPOINT` is unset, so the OSM checker is off. Set it to an Overpass URL to
-  enable it (one request per 10 s, ADR-0006).
+  enable it (one request per 10 s, ADR-0006). `EATSIGHTS_OSM_IDLE_SECS` (300) is how long it
+  sleeps when nothing is due; `EATSIGHTS_OSM_MIN_INTERVAL_SECS` (10) can go lower only for a
+  loopback endpoint (a local mirror), never for a public Overpass server.
 - `/metrics` is served on the same port and is public through the ingress. It holds only
   counters, but you can block `/metrics` at the ingress and scrape the Service directly.
 

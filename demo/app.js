@@ -16,12 +16,14 @@ const S = {
   place: null, menu: null, menuCall: null, revalidate: null,
   registry: null,
   keys: [], keyCall: null,
-  form: { name: 'My test stall', ml: '', category: 'tea_stall', city: 'ernakulam', lat: '9.9816', lng: '76.2999', section: 'Drinks', item: 'Tea', price: '15' },
+  form: { name: 'My test stall', ml: '', category: 'tea_stall', city: 'ernakulam', lat: '9.9816', lng: '76.2999', section: 'Drinks', item: 'Tea', dish: 'Tea', wikidata: 'Q6097', wdStatus: 'verified', price: '15' },
+  createdOsm: null, osmLinkCall: null,
   created: null, createCall: null,
   priceCall: null, priceSent: null, fact: null, factHistory: [], busy: false,
   dupCall: null, tamperCall: null,
   privacy: null,
   feed: [], feedAfter: null, exportCall: null,
+  dishes: null, dish: null, dishFacts: null, merged: null,
   error: null,
 };
 const set = (patch) => { Object.assign(S, patch); draw(); };
@@ -146,7 +148,7 @@ const makeKey = run(async () => {
 
 const createPlace = run(async () => {
   const k = S.keys[0];
-  if (!k) throw new Error('make a key first (step 3)');
+  if (!k) throw new Error('make a key first (step 4)');
   const f = S.form;
   const lat = Number(f.lat), lng = Number(f.lng);
   if (!f.name.trim() || !Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error('name, lat and lng are required');
@@ -155,11 +157,39 @@ const createPlace = run(async () => {
     category: f.category, location: { lat, lng, precision_m: 25 }, city: f.city.trim() || 'ernakulam',
   };
   const section = { id: es.ulid('sc_'), place_id: place.id, labels: { en: f.section.trim() || 'Menu' }, kind: 'other', sort: 1 };
-  const item = { id: es.ulid('mi_'), place_id: place.id, section_id: section.id, labels: { en: f.item.trim() || 'Item' } };
+  const qid = f.wikidata.trim().toUpperCase();
+  if (qid && !/^Q[1-9]\d*$/.test(qid)) throw new Error('a Wikidata id looks like Q6097');
+  const dish = f.dish.trim() ? {
+    id: es.ulid('di_'), labels: { en: 'Demo · ' + f.dish.trim().replace(/^Demo · /, '') }, kind: 'dish',
+    ...(qid ? { wikidata: { id: qid, status: f.wdStatus, ...(f.wdStatus === 'verified' ? { verified_at: new Date().toISOString().slice(0, 10) } : {}) } } : {}),
+  } : null;
+  const item = { id: es.ulid('mi_'), place_id: place.id, section_id: section.id, labels: { en: f.item.trim() || 'Item' }, ...(dish ? { dish_id: dish.id } : {}) };
   const subs = [];
-  for (const [t, e] of [['place', place], ['section', section], ['menu_item', item]]) subs.push((await es.entitySubmission(k, t, e)).signed);
+  const list = [['place', place], ['section', section], ...(dish ? [['dish', dish]] : []), ['menu_item', item]];
+  for (const [t, e] of list) subs.push((await es.entitySubmission(k, t, e)).signed);
   const r = await api.post('/v1/entities', subs);
-  set({ createCall: r, created: { place, section, item }, fact: null, factHistory: [], priceCall: null, dupCall: null, tamperCall: null, privacy: null });
+  set({ createCall: r, created: { place, section, item, dish }, createdOsm: null, osmLinkCall: null, fact: null, factHistory: [], priceCall: null, dupCall: null, tamperCall: null, privacy: null });
+  watchOsm(place.id);
+});
+
+// The OSM checker (a worker) searches around every new pin. Watch it change the place's osm state.
+async function watchOsm(id) {
+  for (let i = 0; i < 60 && S.created?.place.id === id; i++) {
+    const r = await api.get(`/v1/places/${id}`);
+    set({ createdOsm: r.body?.osm || null });
+    if (r.body?.osm && r.body.osm.state !== 'unchecked') return;
+    await sleep(2000);
+  }
+}
+
+// Confirming an OSM link is an admin action: only root or verifier keys may sign it. Sending it
+// with a browser key shows the request format and the permission check (403).
+const tryLinkOsm = run(async () => {
+  const k = S.keys[0];
+  const cand = S.createdOsm?.candidates?.[0];
+  if (!k || !cand) throw new Error('needs a key and an OSM candidate');
+  const { signed } = await es.sign(k, { id: es.ulid('es_'), action: 'link_osm', params: { place_id: S.created.place.id, osm_id: cand.id }, issued_at: es.nowUtc(), issuer_key_id: k.key_id });
+  set({ osmLinkCall: await api.post('/v1/admin/osm-links', signed) });
 });
 
 async function submitPrice(key) {
@@ -186,7 +216,7 @@ async function waitFact(prevCount) {
 }
 
 const reportPrice = run(async () => {
-  if (!S.created) throw new Error('add a place first (step 4)');
+  if (!S.created) throw new Error('add a place first (step 5)');
   const { r, signed } = await submitPrice(S.keys[0]);
   set({ priceCall: r, priceSent: signed });
   const f = await waitFact(0);
@@ -224,6 +254,64 @@ const checkPrivacy = run(async () => {
 });
 
 const loadExport = run(async () => set({ exportCall: await api.get('/v1/export') }));
+
+const loadDishes = run(async () => {
+  const r = await api.get('/v1/dishes?limit=100');
+  set({ dishes: r });
+});
+
+const openDish = run(async (d) => {
+  const r = await api.get(`/v1/facts?dish_id=${d.id}&limit=50`);
+  set({ dish: d, dishFacts: r.body?.items || [] });
+});
+
+// Merges are in the change feed (op "merge"); `follow=false` returns the merged record itself.
+const findMerged = run(async () => {
+  const seen = new Set();
+  let after = 0;
+  for (let i = 0; i < 20; i++) {
+    const r = await api.get(`/v1/changes?after=${after}&limit=500`);
+    for (const c of r.body?.items || []) if (c.entity_type === 'place' && c.op === 'merge') seen.add(c.entity_id);
+    if (!r.body?.items?.length || r.body.next_after === after) break;
+    after = r.body.next_after;
+  }
+  const out = [];
+  for (const id of seen) {
+    const raw = await api.get(`/v1/places/${id}?follow=false`);
+    if (raw.body?.record_state !== 'merged') continue;
+    const followed = await fetch(`${BASE}/v1/places/${id}`, { cache: 'no-store' });
+    out.push({ place: raw.body, raw, redirected: followed.redirected, finalUrl: followed.url });
+  }
+  set({ merged: out });
+});
+
+const WD_STATUS = { verified: ['✓', 'Verified link'], unverified: ['○', 'Unverified link'], broken: ['✕', 'Broken link'] };
+function Wikidata({ link }) {
+  if (!link) return html`<span class="chip unconfirmed">○ No Wikidata item</span>`;
+  const [icon, words] = WD_STATUS[link.status] || ['?', link.status];
+  return html`<span class=${'chip ' + (link.status === 'verified' ? 'confirmed crayon' : link.status === 'broken' ? 'error' : 'unconfirmed')}>${icon} ${words}</span>
+    ${link.status === 'broken' ? html` <code>${link.id}</code>` : html` <a class="outbound" href=${'https://www.wikidata.org/wiki/' + link.id} rel="noopener noreferrer" target="_blank">${link.id} on Wikidata ↗</a>`}`;
+}
+
+const OSM_STATE = {
+  unchecked: ['…', 'Not searched yet'],
+  unmapped: ['○', 'Not on OpenStreetMap'],
+  candidate: ['?', 'Possible OSM matches'],
+  linked: ['✓', 'Linked to OSM'],
+};
+function OsmBlock({ osm }) {
+  if (!osm) return null;
+  const [icon, words] = OSM_STATE[osm.state] || ['?', osm.state];
+  return html`<div>
+    <h3>On the map</h3>
+    <div class="facts"><span class=${'chip ' + (osm.state === 'linked' ? 'confirmed crayon' : 'unconfirmed')}>${icon} ${words}</span>
+      ${osm.ready_to_map ? html` <span class="chip crayon">⚑ Ready to map</span>` : null}</div>
+    ${osm.id ? html`<div class="facts">OSM <code>${osm.id}</code> · confirmed by a person on ${osm.verified_at}</div>` : null}
+    ${osm.checked_at ? html`<div class="facts">searched ${osm.checked_at}</div>` : null}
+    ${osm.candidates?.length ? html`<div class="facts">${osm.candidates.map((c) => html`<div><code>${c.id}</code> · ${Math.round(c.distance_m)} m away · name match ${Math.round((c.name_score || 0) * 100)}%</div>`)}</div>` : null}
+    <small>Only OSM ids, distances and match scores are stored, never OSM names, tags or coordinates. On develop the OSM search is a dummy service, so these ids are fake.</small>
+  </div>`;
+}
 
 async function pollFeed() {
   for (;;) {
@@ -289,6 +377,7 @@ function App() {
         <h3>${label(S.menu.place.names)}</h3>
         ${S.menu.place.names.ml ? html`<p lang="ml">${S.menu.place.names.ml}</p>` : null}
         <small>${S.menu.place.category} · ${S.menu.place.city} · built ${S.menu.built_at} · ${S.menu.place.id}</small>
+        <${OsmBlock} osm=${S.menu.place.osm}/>
         ${S.menu.place_facts?.length ? html`<h3>About the place</h3>${S.menu.place_facts.map((f) => html`<${FactLine} f=${f}/>`)}` : null}
         ${(S.menu.sections.length ? S.menu.sections : [{ id: null, labels: { en: 'Items' } }]).map((sec) => html`<div>
           <h3>${sec.parent_section_id ? '↳ ' : ''}${label(sec.labels)}</h3>
@@ -306,17 +395,38 @@ function App() {
         ${S.revalidate ? html`<span class="chip" aria-live="polite">${S.revalidate.status === 304 ? '✓ 304 Not Modified · nothing re-sent' : S.revalidate.status}</span>` : null}</div>` : null}
       <${Slip} title="Places request" call=${S.placesCall}/>
       <${Slip} title="Menu request" call=${S.menuCall}/>
+      <h3>Duplicates and merges</h3>
+      <p class="muted">IDs live forever. A merged place keeps its id and redirects (301) to the survivor; nothing is deleted.</p>
+      <button disabled=${busy} onClick=${findMerged}>Find merged places</button>
+      ${S.merged ? (S.merged.length ? html`<ul class="list">${S.merged.map((m) => html`<li><p>
+        <code>${m.place.id}</code> “${label(m.place.names)}”<br/>
+        <span class="chip">↪ merged into</span> <code>${m.place.merged_into}</code><br/>
+        <small>GET /v1/places/${m.place.id} → ${m.redirected ? '301, followed to ' + m.finalUrl.replace(/^https?:\/\/[^/]+/, '') : 'not redirected'} · with ?follow=false → 200 and merged_into</small></p></li>`)}</ul>`
+        : html`<p class="chip">No merged places</p>`) : null}
+    </section>
+
+    <section aria-labelledby="s2b">
+      <h2 id="s2b"><span class="n">2</span>Dishes and Wikidata</h2>
+      <p class="lead">A dish is a concept shared across places. Its only external link is a Wikidata id; labels, articles and images are read from Wikidata, never copied.</p>
+      <button class="primary" disabled=${busy} onClick=${loadDishes}>Show dishes</button>
+      ${S.dishes ? html`<ul class="list">${S.dishes.body.items.map((d) => html`<li><p>
+        <button class="pick" aria-pressed=${S.dish?.id === d.id} onClick=${() => openDish(d)}><span>${label(d.labels)}${d.labels.ml ? html` · <span lang="ml">${d.labels.ml}</span>` : null}</span><small>${d.kind || ''}</small></button>
+        ${d.aliases?.length ? html`<small>also ${d.aliases.map(label).join(', ')}</small>` : null}
+        <${Wikidata} link=${d.wikidata}/></p></li>`)}</ul>
+        <${Slip} title="Dishes request" call=${S.dishes}/>` : null}
+      ${S.dish ? html`<div class="paper"><h3>${label(S.dish.labels)}</h3>
+        ${S.dishFacts.length ? S.dishFacts.map((f) => html`<${FactLine} f=${f}/>`) : html`<p>No dish-level facts yet.</p>`}</div>` : null}
     </section>
 
     <section aria-labelledby="s2">
-      <h2 id="s2"><span class="n">2</span>What can be observed</h2>
+      <h2 id="s2"><span class="n">3</span>What can be observed</h2>
       <p class="lead">A public registry of properties. Each has a scope, a value schema, a half-life and a rule for combining reports.</p>
       ${S.registry ? html`<div class="scroll"><table class="props"><thead><tr><th>Property</th><th>Scope</th><th>Half-life</th><th>Combine</th><th>Who writes</th></tr></thead>
         <tbody>${S.registry.body.items.map((p) => html`<tr><td><code>${p.id}</code>${p.status === 'proposed' ? html` <small>proposed</small>` : null}</td><td>${p.scope}</td><td>${p.half_life_hours < 24 ? p.half_life_hours + ' h' : Math.round(p.half_life_hours / 24) + ' d'}</td><td>${p.aggregation.strategy}</td><td>${p.writers.join(', ')}</td></tr>`)}</tbody></table></div>` : html`<p>Loading…</p>`}
     </section>
 
     <section aria-labelledby="s3">
-      <h2 id="s3"><span class="n">3</span>Your key</h2>
+      <h2 id="s3"><span class="n">4</span>Your key</h2>
       <p class="lead">No accounts or passwords. Your browser makes an Ed25519 key; every write is signed over its RFC 8785 canonical JSON. The private key never leaves this tab.</p>
       <button class="primary" disabled=${busy || S.edSupported === false} onClick=${makeKey}>${S.keys.length ? 'Make a new key' : 'Make a key and register it'}</button>
       ${S.keys[0] ? html`<dl class="kv">
@@ -329,7 +439,7 @@ function App() {
     </section>
 
     <section aria-labelledby="s4">
-      <h2 id="s4"><span class="n">4</span>Add a place</h2>
+      <h2 id="s4"><span class="n">5</span>Add a place, link Wikidata, watch the OSM check</h2>
       <p class="lead">Places, sections and menu items are created with signed writes. Only the place's pin is stored, never where a person is.</p>
       <p class="muted">Names get a “Demo · ” prefix here so demo data stays recognisable.</p>
       <div class="row"><${Field} name="name" label="Name"/><${Field} name="ml" label="Malayalam name (optional)" lang="ml"/></div>
@@ -341,18 +451,30 @@ function App() {
       </div>
       <div class="row"><${Field} name="lat" label="Latitude" inputmode="decimal"/><${Field} name="lng" label="Longitude" inputmode="decimal"/></div>
       <div class="row"><${Field} name="section" label="Section"/><${Field} name="item" label="Menu item"/></div>
+      <div class="row"><${Field} name="dish" label="Dish (shared concept, optional)"/><${Field} name="wikidata" label="Wikidata id (optional)" placeholder="Q6097"/>
+        <label>Link status<select value=${S.form.wdStatus} onChange=${(e) => { S.form.wdStatus = e.currentTarget.value; }}>
+          ${['verified', 'unverified', 'broken'].map((s) => html`<option value=${s}>${s}</option>`)}</select></label></div>
+      <p class="muted">Find ids at <a href="https://www.wikidata.org/" rel="noopener noreferrer" target="_blank">wikidata.org ↗</a>, e.g. tea Q6097, masala chai Q877661, pazham pori Q13113151.</p>
       <button class="primary" disabled=${busy || !S.keys.length} onClick=${createPlace}>Sign and create</button>
-      ${!S.keys.length ? html`<p class="muted">Make a key first (step 3).</p>` : null}
+      ${!S.keys.length ? html`<p class="muted">Make a key first (step 4).</p>` : null}
       <${Problem} call=${S.createCall}/>
+      ${S.created?.dish?.wikidata ? html`<p>Dish “${S.created.dish.labels.en}” → <${Wikidata} link=${S.created.dish.wikidata}/></p>` : null}
+      ${S.created ? html`<div class="paper" aria-live="polite">
+        ${S.createdOsm ? html`<${OsmBlock} osm=${S.createdOsm}/>` : html`<p>Waiting for the OSM checker…</p>`}
+        ${S.createdOsm?.state === 'unchecked' ? html`<p>The checker searches one pin every 10 seconds, so this can take a moment.</p>` : null}
+      </div>
+      ${S.createdOsm?.state === 'candidate' ? html`<div class="row"><button disabled=${busy} onClick=${tryLinkOsm}>Confirm the first candidate (try with your key)</button></div>
+        <p class="muted">Linking is a person's decision, signed by a verifier or root key. Your new key is not one, so expect 403; see “Demo · Rooftop Cafe” for a place a verifier linked.</p>` : null}
+      ${S.osmLinkCall ? html`<p><span class=${'chip' + (S.osmLinkCall.status === 403 ? ' error' : '')}>${S.osmLinkCall.status} ${S.osmLinkCall.body?.title || S.osmLinkCall.body?.status || ''}</span></p><${Slip} title="Admin link_osm request" call=${S.osmLinkCall} open=${true}/>` : null}` : null}
       <${Slip} title="Entity submissions" call=${S.createCall}/>
     </section>
 
     <section aria-labelledby="s5">
-      <h2 id="s5"><span class="n">5</span>Report a price, watch a fact form</h2>
+      <h2 id="s5"><span class="n">6</span>Report a price, watch a fact form</h2>
       <p class="lead">An observation is one signed report. A worker combines reports into a fact. No single key can ever confirm a fact: it takes independent people, and trusted keys weigh more.</p>
       <div class="row"><${Field} name="price" label="Price (Rs)" inputmode="decimal"/>
         <button class="primary" disabled=${busy || !S.created} onClick=${reportPrice}>Sign and report</button></div>
-      ${!S.created ? html`<p class="muted">Add a place first (step 4).</p>` : null}
+      ${!S.created ? html`<p class="muted">Add a place first (step 5).</p>` : null}
       <${Problem} call=${S.priceCall}/>
       ${S.fact ? html`<div class="paper" aria-live="polite">
         <div class="line"><span class="name">${S.created.item.labels.en}</span><span class="dots"></span><span class="price">${rupees(S.fact.current_value.amount_minor)}</span></div>
@@ -371,7 +493,7 @@ function App() {
     </section>
 
     <section aria-labelledby="s6">
-      <h2 id="s6"><span class="n">6</span>What gets published</h2>
+      <h2 id="s6"><span class="n">7</span>What gets published</h2>
       <p class="lead">The signed original stays private. The public observation carries a contributor class and a per-place pseudonym instead of your key.</p>
       <button class="primary" disabled=${busy || !S.priceSent} onClick=${checkPrivacy}>Compare sent and published</button>
       ${S.privacy ? html`<div class="cols">
@@ -383,7 +505,7 @@ function App() {
     </section>
 
     <section aria-labelledby="s7">
-      <h2 id="s7"><span class="n">7</span>Sync like an app</h2>
+      <h2 id="s7"><span class="n">8</span>Sync like an app</h2>
       <p class="lead">Apps keep a local copy: download a snapshot, then follow the change feed. Live:</p>
       <div class="feed" aria-live="off">${S.feed.map((c) => html`<div><span>#${c.seq}</span><span>${c.entity_type}</span><code>${c.entity_id}</code><span>${c.op}</span></div>`)}</div>
       <div class="row"><button disabled=${busy} onClick=${loadExport}>Show the latest snapshot</button></div>

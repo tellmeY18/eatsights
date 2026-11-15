@@ -31,6 +31,15 @@ root, then `/demo/index.html?api=...`); `serve.py`'s CSP blocks cross-origin cal
 `eatsights.js` (RFC 8785 canonical JSON, Ed25519 via WebCrypto, key ids, ULIDs, API calls),
 `fonts/` (Atkinson Hyperlegible Mono, Courier Prime; SIL OFL 1.1).
 
+## Dummy OSM search
+
+On develop the OSM checker points at `demo/mock-overpass.py` (`127.0.0.1:8097`), which
+returns obviously fake objects (ids 900000000+) near most pins and nothing near two, so the
+demo shows `candidate`, `linked`, `unmapped` and `ready_to_map` without touching
+OpenStreetMap or linking demo places to real map objects. Develop runs the checker with
+`EATSIGHTS_OSM_IDLE_SECS=5` and `EATSIGHTS_OSM_MIN_INTERVAL_SECS=1` (allowed only because the
+endpoint is loopback).
+
 ## Demo data
 
 `node demo/seed.mjs <base> <root-private-key>` loads fictional places, all named

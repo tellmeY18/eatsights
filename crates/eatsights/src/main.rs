@@ -310,8 +310,24 @@ fn spawn_m5_workers(
         interval,
     ));
     if let Some(endpoint) = env("EATSIGHTS_OSM_ENDPOINT") {
-        let mut cfg = osm::OsmConfig::new(endpoint);
+        let mut cfg = osm::OsmConfig::new(endpoint.clone());
         cfg.recheck_days = env_num("EATSIGHTS_OSM_RECHECK_DAYS", cfg.recheck_days)?;
+        // How long the checker sleeps when nothing is due (default 300 s).
+        cfg.idle =
+            Duration::from_secs(env_num("EATSIGHTS_OSM_IDLE_SECS", cfg.idle.as_secs())?.max(1));
+        // Pace between requests. Public Overpass endpoints keep the 10 s floor (usage policy);
+        // only a loopback endpoint (a local mirror or test double) may go faster.
+        let local = endpoint.starts_with("http://127.0.0.1")
+            || endpoint.starts_with("http://localhost")
+            || endpoint.starts_with("http://[::1]");
+        let floor = if local { 1 } else { 10 };
+        cfg.min_interval = Duration::from_secs(
+            env_num(
+                "EATSIGHTS_OSM_MIN_INTERVAL_SECS",
+                cfg.min_interval.as_secs(),
+            )?
+            .max(floor),
+        );
         tokio::spawn(osm::run(db.clone(), cfg, stop_rx.clone()));
     }
     Ok(())
