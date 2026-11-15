@@ -12,8 +12,8 @@ image (`.dockerignore`), and can be deleted at any time.
 ## How it is served
 
 - `demo/serve.py` (Python stdlib) serves `GET /` → `index.html` and `GET /demo/*` → this
-  folder, nothing else, on `127.0.0.1:8095`, with a strict Content-Security-Policy
-  (same-origin only, no inline scripts or styles).
+  folder, nothing else, on `127.0.0.1:8095`, with a strict Content-Security-Policy (no
+  inline scripts or styles; the API same-origin, plus read-only browser lookups listed below).
 - The Cloudflare tunnel for `develop.letsimpl.fyi` routes `^/(demo/.*)?$` to it and every
   other path to the API on `127.0.0.1:8080`, so the page calls the API same-origin.
 
@@ -30,6 +30,19 @@ root, then `/demo/index.html?api=...`); `serve.py`'s CSP blocks cross-origin cal
 `index.html`, `styles.css`, `app.js` (Preact + htm, vendored in `vendor/`, no build step),
 `eatsights.js` (RFC 8785 canonical JSON, Ed25519 via WebCrypto, key ids, ULIDs, API calls),
 `fonts/` (Atkinson Hyperlegible Mono, Courier Prime; SIL OFL 1.1).
+
+## Read at view time: maps, Wikidata, Wikipedia, Commons
+
+Eatsights stores a place's own pin and a dish's Wikidata id. `enrich.js` reads the rest in the
+browser when it is shown, keeps it only in memory, and credits it:
+
+- Map: OpenStreetMap tiles around the pin (`tile.openstreetmap.org`, with attribution and an
+  origin Referer, per the tile usage policy). Loaded only for an opened place.
+- Wikidata label, Malayalam label and description; the Wikipedia summary (English, else
+  Malayalam); the Commons image (P18) with author and licence. Loaded only on request.
+
+Nothing from these sources is written to Eatsights. OSM ids on develop stay dummy, so maps
+come from the pin, never from an OSM object.
 
 ## Dummy OSM search
 

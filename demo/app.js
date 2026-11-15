@@ -2,6 +2,7 @@
 import { h, render } from '/demo/vendor/preact.module.js';
 import htm from '/demo/vendor/htm.module.js';
 import * as es from '/demo/eatsights.js';
+import { wikidata, mapTiles } from '/demo/enrich.js';
 
 const html = htm.bind(h);
 const BASE = new URLSearchParams(location.search).get('api') || '';
@@ -24,6 +25,7 @@ const S = {
   privacy: null,
   feed: [], feedAfter: null, exportCall: null,
   dishes: null, dish: null, dishFacts: null, merged: null,
+  dishById: {}, wiki: {}, wikiOpen: {},
   error: null,
 };
 const set = (patch) => { Object.assign(S, patch); draw(); };
@@ -125,6 +127,11 @@ const openPlace = run(async (p) => {
   set({ place: p, menu: null, revalidate: null, cell: geohash(p.location.lat, p.location.lng, 6) });
   const r = await api.get(`/v1/places/${p.id}/menu`);
   set({ menu: r.status === 200 ? r.body : null, menuCall: r });
+  const ids = [...new Set((r.body?.items || []).map((it) => it.item.dish_id).filter((id) => id && !S.dishById[id]))];
+  const got = await Promise.all(ids.map((id) => api.get(`/v1/dishes/${id}`)));
+  const add = {};
+  for (const d of got) if (d.status === 200) add[d.body.id] = d.body;
+  set({ dishById: { ...S.dishById, ...add } });
 });
 
 const revalidate = run(async () => {
@@ -263,6 +270,13 @@ const loadDishes = run(async () => {
 const openDish = run(async (d) => {
   const r = await api.get(`/v1/facts?dish_id=${d.id}&limit=50`);
   set({ dish: d, dishFacts: r.body?.items || [] });
+  if (d.wikidata && !S.wiki[d.wikidata.id]) {
+    set({ wiki: { ...S.wiki, [d.wikidata.id]: { loading: true } } });
+    wikidata(d.wikidata.id).then(
+      (data) => set({ wiki: { ...S.wiki, [d.wikidata.id]: { data } } }),
+      (e) => set({ wiki: { ...S.wiki, [d.wikidata.id]: { error: String(e.message || e) } } }),
+    );
+  }
 });
 
 // Merges are in the change feed (op "merge"); `follow=false` returns the merged record itself.
@@ -299,6 +313,62 @@ const OSM_STATE = {
   candidate: ['?', 'Possible OSM matches'],
   linked: ['✓', 'Linked to OSM'],
 };
+// Wikidata / Wikipedia / Commons, read in the browser on demand (never stored in Eatsights).
+function toggleWiki(key, qid) {
+  const open = !S.wikiOpen[key];
+  set({ wikiOpen: { ...S.wikiOpen, [key]: open } });
+  if (!open || S.wiki[qid]) return;
+  set({ wiki: { ...S.wiki, [qid]: { loading: true } } });
+  wikidata(qid).then(
+    (data) => set({ wiki: { ...S.wiki, [qid]: { data } } }),
+    (e) => set({ wiki: { ...S.wiki, [qid]: { error: String(e.message || e) } } }),
+  );
+}
+
+function WikiPanel({ qid }) {
+  const w = S.wiki[qid];
+  if (!w || w.loading) return html`<p aria-live="polite">Reading ${qid} from Wikidata…</p>`;
+  if (w.error) return html`<p class="chip error" role="status">✕ ${w.error}. A broken link stays stored until someone fixes it.</p>`;
+  const d = w.data;
+  return html`<div class="wiki">
+    ${d.image ? html`<figure><img src=${d.image.src} alt=${d.label || d.qid} loading="lazy" referrerpolicy="strict-origin-when-cross-origin"/>
+      <figcaption><a href=${d.image.page} rel="noopener noreferrer" target="_blank">${d.image.artist} · ${d.image.licence} · Wikimedia Commons ↗</a></figcaption></figure>` : html`<p class="muted">No Commons image on this item.</p>`}
+    <div>
+      <p><strong>${d.label || d.qid}</strong>${d.labelMl ? html` · <span lang="ml">${d.labelMl}</span>` : null}</p>
+      ${d.description ? html`<p class="muted">${d.description}</p>` : null}
+      ${d.wikipedia ? html`<p lang=${d.wikipedia.lang}>${d.wikipedia.extract}</p>
+        <p><a href=${d.wikipedia.url} rel="noopener noreferrer" target="_blank">${d.wikipedia.title} on ${d.wikipedia.lang}.wikipedia.org ↗</a></p>` : html`<p class="muted">No Wikipedia article linked.</p>`}
+      <p><a href=${d.wikidataUrl} rel="noopener noreferrer" target="_blank">${d.qid} on Wikidata ↗</a></p>
+      <small>Read live from Wikidata, Wikipedia and Commons. Eatsights stores only the id ${d.qid}.</small>
+    </div>
+  </div>`;
+}
+
+function DishLine({ dish, k }) {
+  if (!dish) return null;
+  const link = dish.wikidata;
+  return html`<div class="facts">dish <strong>${label(dish.labels)}</strong> <${Wikidata} link=${link}/>
+    ${link ? html` <button class="quiet" aria-expanded=${!!S.wikiOpen[k]} onClick=${() => toggleWiki(k, link.id)}>${S.wikiOpen[k] ? 'Hide' : 'Show'} Wikipedia + image</button>` : null}
+    ${link && S.wikiOpen[k] ? html`<${WikiPanel} qid=${link.id}/>` : null}</div>`;
+}
+
+// Static map from the place's own pin, drawn with OpenStreetMap tiles in the browser.
+function PinMap({ lat, lng, zoom = 17 }) {
+  const W = 480, H = 280;
+  const tiles = mapTiles(lat, lng, zoom, W, H);
+  return html`<figure class="map-wrap">
+    <div class="map" role="img" aria-label=${`Map around the pin ${lat.toFixed(4)}, ${lng.toFixed(4)}`}>
+      <div class="map-inner">
+        ${tiles.map((t) => html`<img key=${t.key} src=${t.src} alt="" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" style=${{ left: t.left + 'px', top: t.top + 'px' }}/>`)}
+        <span class="map-pin" aria-hidden="true">▼</span>
+      </div>
+    </div>
+    <figcaption>Pin ${lat.toFixed(5)}, ${lng.toFixed(5)} (Eatsights' own data) ·
+      <a href=${`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=18/${lat}/${lng}`} rel="noopener noreferrer" target="_blank">open map ↗</a> ·
+      tiles © <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer" target="_blank">OpenStreetMap contributors</a></figcaption>
+  </figure>`;
+}
+
 function OsmBlock({ osm }) {
   if (!osm) return null;
   const [icon, words] = OSM_STATE[osm.state] || ['?', osm.state];
@@ -377,6 +447,7 @@ function App() {
         <h3>${label(S.menu.place.names)}</h3>
         ${S.menu.place.names.ml ? html`<p lang="ml">${S.menu.place.names.ml}</p>` : null}
         <small>${S.menu.place.category} · ${S.menu.place.city} · built ${S.menu.built_at} · ${S.menu.place.id}</small>
+        <${PinMap} lat=${S.menu.place.location.lat} lng=${S.menu.place.location.lng}/>
         <${OsmBlock} osm=${S.menu.place.osm}/>
         ${S.menu.place_facts?.length ? html`<h3>About the place</h3>${S.menu.place_facts.map((f) => html`<${FactLine} f=${f}/>`)}` : null}
         ${(S.menu.sections.length ? S.menu.sections : [{ id: null, labels: { en: 'Items' } }]).map((sec) => html`<div>
@@ -386,6 +457,7 @@ function App() {
             const v = it.item.variant;
             const name = label(it.item.labels) + (v ? ` · ${v.label ? label(v.label) : v.size}` : '');
             return html`<div><div class="line"><span class="name">${name}</span><span class="dots"></span><span class="price">${pf?.current_value ? rupees(pf.current_value.amount_minor) : '—'}</span></div>
+              <${DishLine} dish=${S.dishById[it.item.dish_id]} k=${'mi:' + it.item.id}/>
               ${it.facts.length ? it.facts.map((f) => html`<${FactLine} f=${f}/>`) : html`<div class="facts">${factChip(null)}</div>`}</div>`;
           })}
         </div>`)}
@@ -415,6 +487,7 @@ function App() {
         <${Wikidata} link=${d.wikidata}/></p></li>`)}</ul>
         <${Slip} title="Dishes request" call=${S.dishes}/>` : null}
       ${S.dish ? html`<div class="paper"><h3>${label(S.dish.labels)}</h3>
+        ${S.dish.wikidata ? html`<${WikiPanel} qid=${S.dish.wikidata.id}/>` : html`<p class="muted">No Wikidata link: nothing to read.</p>`}
         ${S.dishFacts.length ? S.dishFacts.map((f) => html`<${FactLine} f=${f}/>`) : html`<p>No dish-level facts yet.</p>`}</div>` : null}
     </section>
 
@@ -459,6 +532,8 @@ function App() {
       ${!S.keys.length ? html`<p class="muted">Make a key first (step 4).</p>` : null}
       <${Problem} call=${S.createCall}/>
       ${S.created?.dish?.wikidata ? html`<p>Dish “${S.created.dish.labels.en}” → <${Wikidata} link=${S.created.dish.wikidata}/></p>` : null}
+      ${S.created ? html`<div class="paper"><${PinMap} lat=${S.created.place.location.lat} lng=${S.created.place.location.lng}/>
+        ${S.created.dish ? html`<${DishLine} dish=${S.created.dish} k=${'new:' + S.created.dish.id}/>` : null}</div>` : null}
       ${S.created ? html`<div class="paper" aria-live="polite">
         ${S.createdOsm ? html`<${OsmBlock} osm=${S.createdOsm}/>` : html`<p>Waiting for the OSM checker…</p>`}
         ${S.createdOsm?.state === 'unchecked' ? html`<p>The checker searches one pin every 10 seconds, so this can take a moment.</p>` : null}

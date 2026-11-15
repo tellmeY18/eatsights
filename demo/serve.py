@@ -58,11 +58,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # Origin only, cross-site: the OSM tile usage policy needs a valid Referer.
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        # Same-origin API, plus read-only lookups made in the browser at view time:
+        # OSM map tiles, Wikidata, Wikipedia summaries and Commons images. Nothing from these
+        # sources is stored in Eatsights.
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
-            "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'self'; "
+            "img-src 'self' data: https://tile.openstreetmap.org https://upload.wikimedia.org https://thumb.wikimedia.org; "
+            "connect-src 'self' https://www.wikidata.org https://en.wikipedia.org https://ml.wikipedia.org https://commons.wikimedia.org; "
+            "style-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'",
         )
         self.end_headers()
         if not head_only:
