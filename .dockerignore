@@ -10,3 +10,4 @@ result-*
 **/.env.*
 node_modules/
 spike/
+demo/
