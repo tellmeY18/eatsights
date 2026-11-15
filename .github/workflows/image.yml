@@ -101,6 +101,10 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
           flavor: latest=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+          annotations: |
+            manifest:org.opencontainers.image.licenses=AGPL-3.0-or-later
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
