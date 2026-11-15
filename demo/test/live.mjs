@@ -18,7 +18,7 @@ for (const k of keys) {
 const [A] = keys;
 const pl = es.ulid('pl_'), sc = es.ulid('sc_'), mi = es.ulid('mi_');
 const batch = [
-  await es.entitySubmission(A, 'place', { id: pl, names: { en: 'Corner tea stall (demo)' }, category: 'tea_stall', location: { lat: 9.9816, lng: 76.2999 }, city: 'ernakulam' }),
+  await es.entitySubmission(A, 'place', { id: pl, names: { en: 'Demo · Live test stall' }, category: 'tea_stall', location: { lat: 9.9816, lng: 76.2999 }, city: 'ernakulam' }),
   await es.entitySubmission(A, 'section', { id: sc, place_id: pl, labels: { en: 'Drinks' }, kind: 'drinks', sort: 1 }),
   await es.entitySubmission(A, 'menu_item', { id: mi, place_id: pl, section_id: sc, labels: { en: 'Tea' } }),
 ].map((x) => x.signed);

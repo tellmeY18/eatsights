@@ -31,6 +31,18 @@ root, then `/demo/index.html?api=...`); `serve.py`'s CSP blocks cross-origin cal
 `eatsights.js` (RFC 8785 canonical JSON, Ed25519 via WebCrypto, key ids, ULIDs, API calls),
 `fonts/` (Atkinson Hyperlegible Mono, Courier Prime; SIL OFL 1.1).
 
+## Demo data
+
+`node demo/seed.mjs <base> <root-private-key>` loads fictional places, all named
+"Demo · …", covering every case the API handles: confirmed, unconfirmed, contested and stale
+facts; a vendor binding whose price differs from customers; confirm and dispute reports;
+median, mode and union aggregation; sold-out, delisted and seasonal items; nested sections,
+variants, a thali, dish-level facts; a closed place, an empty place, a merged duplicate
+(301) and a legal removal (tombstone). Develop was reset before seeding (2026-11-15).
+
+Do not run `scripts/e2e.sh` against develop: it creates look-alike test stalls. Run it in
+its default mode, which starts its own throwaway server.
+
 ## Tests
 
 ```sh

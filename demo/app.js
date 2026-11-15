@@ -16,7 +16,7 @@ const S = {
   place: null, menu: null, menuCall: null, revalidate: null,
   registry: null,
   keys: [], keyCall: null,
-  form: { name: 'Corner tea stall', ml: '', category: 'tea_stall', city: 'ernakulam', lat: '9.9816', lng: '76.2999', section: 'Drinks', item: 'Tea', price: '15' },
+  form: { name: 'My test stall', ml: '', category: 'tea_stall', city: 'ernakulam', lat: '9.9816', lng: '76.2999', section: 'Drinks', item: 'Tea', price: '15' },
   created: null, createCall: null,
   priceCall: null, priceSent: null, fact: null, factHistory: [], busy: false,
   dupCall: null, tamperCall: null,
@@ -47,6 +47,21 @@ function geohash(lat, lng, precision = 6) {
   }
   return out;
 }
+
+function fmtValue(prop, v) {
+  if (v == null) return '—';
+  if ('amount_minor' in v) return rupees(v.amount_minor) + (v.fulfilment && v.fulfilment !== 'dine_in' ? ` ${v.fulfilment}` : '') + (v.valid_during ? ` (${v.valid_during})` : '') + (v.tax_included ? ' incl. tax' : '');
+  if ('seconds' in v) return `${Math.round(v.seconds / 60)} min ${v.stage.replace(/_/g, ' ')}`;
+  if ('local_time' in v) return `${v.local_time} on ${v.day_type}s`;
+  if ('score' in v) return `${v.score}/5`;
+  if ('level' in v) return `sweetness ${v.level}/4`;
+  if ('value' in v && 'unit' in v) return `${v.value} ${v.unit}`;
+  const list = v.methods || v.kinds || v.options || v.items || v.allergens;
+  if (list) return list.join(', ').replace(/_/g, ' ');
+  return String(v.state || v.type || v.bucket || v.diet || v.rule || JSON.stringify(v)).replace(/_/g, ' ');
+}
+
+const FactLine = ({ f }) => html`<div class="facts"><code>${f.property}</code> · ${fmtValue(f.property, f.current_value)} ${factChip(f)}${f.vendor_value_differs ? html` <span class="chip contested">⚠ Vendor says otherwise</span>` : null}</div>`;
 
 function factChip(f) {
   if (!f) return html`<span class="chip unconfirmed">○ No reports</span>`;
@@ -136,7 +151,7 @@ const createPlace = run(async () => {
   const lat = Number(f.lat), lng = Number(f.lng);
   if (!f.name.trim() || !Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error('name, lat and lng are required');
   const place = {
-    id: es.ulid('pl_'), names: { en: f.name.trim(), ...(f.ml.trim() ? { ml: f.ml.trim() } : {}) },
+    id: es.ulid('pl_'), names: { en: 'Demo · ' + f.name.trim().replace(/^Demo · /, ''), ...(f.ml.trim() ? { ml: f.ml.trim() } : {}) },
     category: f.category, location: { lat, lng, precision_m: 25 }, city: f.city.trim() || 'ernakulam',
   };
   const section = { id: es.ulid('sc_'), place_id: place.id, labels: { en: f.section.trim() || 'Menu' }, kind: 'other', sort: 1 };
@@ -254,6 +269,10 @@ function App() {
     <section aria-labelledby="s1">
       <h2 id="s1"><span class="n">1</span>Browse places and menus</h2>
       <p class="lead">Public reads need no key. Every response is cacheable: ETags, 304s and pre-built menu documents.</p>
+      <p class="chip">ⓘ Demo data: every place named “Demo · …” is fictional. Try Kaloor Chaya Kada for every kind of fact.</p>
+      <div class="row">
+        ${['ernakulam', 'thrissur', 'kozhikode'].map((c) => html`<button class="quiet" disabled=${busy} onClick=${() => { S.city = c; S.q = ''; search('city'); }}>${c}</button>`)}
+      </div>
       <div class="row">
         <label>City<input value=${S.city} onInput=${(e) => { S.city = e.currentTarget.value; }}/></label>
         <label>Name contains<input value=${S.q} onInput=${(e) => { S.q = e.currentTarget.value; }}/></label>
@@ -268,13 +287,17 @@ function App() {
           <span>${label(p.names)}${p.names.ml ? html` · <span lang="ml">${p.names.ml}</span>` : null}</span><small>${p.category} · ${p.city}</small></button></li>`)}</ul>` : null}
       ${S.menu ? html`<div class="paper" aria-label="Menu">
         <h3>${label(S.menu.place.names)}</h3>
-        <small>built ${S.menu.built_at} · ${S.menu.place.id}</small>
+        ${S.menu.place.names.ml ? html`<p lang="ml">${S.menu.place.names.ml}</p>` : null}
+        <small>${S.menu.place.category} · ${S.menu.place.city} · built ${S.menu.built_at} · ${S.menu.place.id}</small>
+        ${S.menu.place_facts?.length ? html`<h3>About the place</h3>${S.menu.place_facts.map((f) => html`<${FactLine} f=${f}/>`)}` : null}
         ${(S.menu.sections.length ? S.menu.sections : [{ id: null, labels: { en: 'Items' } }]).map((sec) => html`<div>
-          <h3>${label(sec.labels)}</h3>
-          ${S.menu.items.filter((it) => !sec.id || it.item.section_id === sec.id || (!it.item.section_id && sec === S.menu.sections[0])).map((it) => {
+          <h3>${sec.parent_section_id ? '↳ ' : ''}${label(sec.labels)}</h3>
+          ${S.menu.items.filter((it) => !sec.id || it.item.section_id === sec.id).map((it) => {
             const pf = it.facts.find((f) => f.property === 'price.amount');
-            return html`<div><div class="line"><span class="name">${label(it.item.labels)}</span><span class="dots"></span><span class="price">${pf?.current_value ? rupees(pf.current_value.amount_minor) : '—'}</span></div>
-              <div class="facts">${factChip(pf)}${pf?.vendor_value_differs ? html` <span class="chip contested">⚠ Stall and customers differ</span>` : null}</div></div>`;
+            const v = it.item.variant;
+            const name = label(it.item.labels) + (v ? ` · ${v.label ? label(v.label) : v.size}` : '');
+            return html`<div><div class="line"><span class="name">${name}</span><span class="dots"></span><span class="price">${pf?.current_value ? rupees(pf.current_value.amount_minor) : '—'}</span></div>
+              ${it.facts.length ? it.facts.map((f) => html`<${FactLine} f=${f}/>`) : html`<div class="facts">${factChip(null)}</div>`}</div>`;
           })}
         </div>`)}
         ${!S.menu.items.length ? html`<p>No items yet.</p>` : null}
@@ -308,6 +331,7 @@ function App() {
     <section aria-labelledby="s4">
       <h2 id="s4"><span class="n">4</span>Add a place</h2>
       <p class="lead">Places, sections and menu items are created with signed writes. Only the place's pin is stored, never where a person is.</p>
+      <p class="muted">Names get a “Demo · ” prefix here so demo data stays recognisable.</p>
       <div class="row"><${Field} name="name" label="Name"/><${Field} name="ml" label="Malayalam name (optional)" lang="ml"/></div>
       <div class="row">
         <label>Category<select value=${S.form.category} onChange=${(e) => { S.form.category = e.currentTarget.value; }}>
