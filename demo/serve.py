@@ -10,6 +10,7 @@ the host to the API.
     python3 demo/serve.py [port]     # default 8095
 """
 import http.server
+import re
 import mimetypes
 import os
 import sys
@@ -18,6 +19,17 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 mimetypes.add_type("text/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("font/woff2", ".woff2")
+
+ASSET = re.compile(rb"(/demo/[\w./-]+\.(?:js|css))(?![\w?])")
+
+
+def version():
+    """Changes whenever any demo file changes: busts CDN and browser caches."""
+    newest = 0
+    for base, _, files in os.walk(ROOT):
+        for f in files:
+            newest = max(newest, int(os.path.getmtime(os.path.join(base, f))))
+    return str(newest).encode()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -51,6 +63,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with open(full, "rb") as f:
             body = f.read()
         ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        # Stamp asset references with a version so a CDN or browser that ignores no-cache
+        # (e.g. a zone-wide Browser Cache TTL) still loads the current files.
+        if ctype in ("text/html", "text/javascript"):
+            v = version()
+            body = ASSET.sub(lambda m: m.group(1) + b"?v=" + v, body)
         if ctype.startswith("text/") or ctype == "application/json":
             ctype += "; charset=utf-8"
         self.send_response(200)
