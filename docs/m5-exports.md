@@ -39,7 +39,7 @@ Date: 2026-11-14. Covers AGENTS.md 9.4, 8.2 rule 5 and the stale sweep deferred 
 | `EATSIGHTS_EXPORT_KEEP` | 7 |
 | `EATSIGHTS_STALE_SWEEP_MINUTES` | 15 |
 
-`deploy/deployment.yaml` mounts an `emptyDir` at the export directory. `deploy/README.md` explains when to use a PVC instead.
+`deploy/app/deployment.yaml` mounts an `emptyDir` at the export directory. `deploy/README.md` explains when to use a PVC instead.
 
 ## Other changes
 

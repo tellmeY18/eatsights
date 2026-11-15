@@ -9,7 +9,7 @@ AGENTS.md section 1 and section 13 say "build no UI, no web pages". The maintain
 ## Decision
 
 - Serve poem-openapi's built-in Swagger UI at `/docs`, generated from the same OpenAPI document as `/openapi.json`. It is a viewer for the API contract, not a product UI.
-- **Off by default.** Enabled with `EATSIGHTS_SWAGGER_UI=true`. Production (`deploy/configmap.yaml`) leaves it `false` unless the maintainer decides otherwise.
+- **Off by default.** Enabled with `EATSIGHTS_SWAGGER_UI=true`. Production (`deploy/app/configmap.yaml`) leaves it `false` unless the maintainer decides otherwise.
 - "Try it out" targets the `servers` URL, which is `EATSIGHTS_BASE_URL` (set it to `http://127.0.0.1:8080` locally).
 
 ## Consequences

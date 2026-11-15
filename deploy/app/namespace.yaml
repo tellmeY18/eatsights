@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: eatsights
+  labels:
+    # The pods meet the "restricted" Pod Security Standard (non-root UID 65532, no
+    # capabilities, no privilege escalation, RuntimeDefault seccomp, read-only root).
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

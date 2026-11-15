@@ -1,0 +1,171 @@
+name: image
+
+# Builds the container image natively on amd64 and arm64 runners, pushes it to GHCR as
+# one multi-arch image, then smoke-tests it against PostgreSQL 18.
+#   main      -> ghcr.io/<owner>/eatsights:main, :sha-<short>
+#   tag vX.Y.Z -> :X.Y.Z, :X.Y, :latest, :sha-<short>
+# Deploy by digest or by the immutable sha-<short> / X.Y.Z tag (deploy/README.md).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux/amd64, runner: ubuntu-24.04 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name (lowercase)
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          provenance: false
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          d="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${d#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - name: Image name (lowercase)
+        id: meta
+        run: |
+          echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags
+        id: tags
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+          flavor: latest=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+      - name: Digest
+        id: digest
+        run: |
+          tag="$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          d="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=$d" >> "$GITHUB_OUTPUT"
+          echo "### Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${IMAGE}@$d\`" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.tags[] | "- `" + . + "`"' <<< "$DOCKER_METADATA_OUTPUT_JSON" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+  smoke:
+    needs: merge
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: eatsights
+          POSTGRES_PASSWORD: eatsights
+          POSTGRES_DB: eatsights
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U eatsights" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      REF: ${{ needs.merge.outputs.image }}@${{ needs.merge.outputs.digest }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Size budget (<= 30 MB compressed)
+        run: |
+          docker pull "$REF"
+          size="$(docker buildx imagetools inspect "$REF" --raw |
+            jq -r '.manifests[] | select(.platform.architecture=="amd64") | .digest' |
+            xargs -I{} docker buildx imagetools inspect "${REF%@*}@{}" --raw |
+            jq '[.layers[].size] | add')"
+          echo "amd64 compressed size: $size bytes"
+          test "$size" -le 31457280
+      - name: Migrate, serve, probe
+        run: |
+          set -eu
+          ENVS="-e DATABASE_URL=postgres://eatsights:eatsights@127.0.0.1:5432/eatsights
+                -e EATSIGHTS_PSEUDONYM_SALT=ci-smoke-only-salt-0123456789abcdef0123
+                -e EATSIGHTS_ROOT_PUBLIC_KEY=cQv87dv-hvrBvztqUzRau6_KBrCsqvQjXclLE6gP0wI"
+          docker run --rm --network host $ENVS "$REF" migrate
+          docker run -d --name es --network host --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /var/lib/eatsights/exports:uid=65532 \
+            $ENVS "$REF"
+          for i in $(seq 1 60); do curl -fsS localhost:8080/readyz && break; sleep 1; done
+          curl -fsS localhost:8080/healthz
+          curl -fsS localhost:8080/openapi.json | jq -e '.openapi' >/dev/null
+          curl -fsS localhost:8080/v1/registry/properties | jq -e '.items | length == 30'
+          curl -fsS localhost:8080/v1/keys/published | jq -e '.items[0].level == "root"'
+          docker logs es 2>&1 | tail -5
+          docker stop -t 30 es

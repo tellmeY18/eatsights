@@ -1,0 +1,10 @@
+# The one place that says which image runs. Both app/ and migrate/ include this component,
+# so a release always migrates and serves the same build.
+# Pin an immutable tag (sha-<short> or X.Y.Z) or a digest for production:
+#   cd deploy/release && kustomize edit set image eatsights=ghcr.io/tellmey18/eatsights:sha-abc1234
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+images:
+  - name: eatsights
+    newName: ghcr.io/tellmey18/eatsights
+    newTag: main

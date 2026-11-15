@@ -3,20 +3,35 @@ kind: Deployment
 metadata:
   name: eatsights
   namespace: eatsights
+  labels: { app.kubernetes.io/name: eatsights }
 spec:
+  # One replica runs API + worker. To scale reads, split into an `api` Deployment
+  # (--roles api, N replicas) and a `worker` Deployment (--roles worker, exactly 1);
+  # see deploy/README.md "Scaling".
   replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector:
     matchLabels: { app: eatsights }
   template:
     metadata:
-      labels: { app: eatsights }
+      labels: { app: eatsights, app.kubernetes.io/name: eatsights }
     spec:
       terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: eatsights
-          image: ghcr.io/letsimpl/eatsights:latest
+          image: eatsights # set by ../release (kustomize images)
+          imagePullPolicy: IfNotPresent
           args: ["serve", "--roles", "api,worker"]
           ports:
             - { name: http, containerPort: 8080 }
@@ -26,9 +41,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { cpu: 500m, memory: 256Mi }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 1
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
+            failureThreshold: 2
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10

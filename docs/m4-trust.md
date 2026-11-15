@@ -12,7 +12,7 @@ Implements AGENTS.md M4 with the ADR-0006 defaults; the rules and choices are in
   - `revoke`: of `vouch` or `vendor_of`, by the issuer, a verifier or root. Revoking a vouch cascades through the graph; a revoke by root/verifier who is not the issuer is a strike; 2 strikes in 180 days demote one level (floor member, root exempt) with a 30-day vouch cooldown.
   - `rotate`: old key -> fresh registered key; the new key inherits level, depth, strike state and vendor bindings; the old key is `rotated` and its signatures are rejected.
 - **Reads**: `GET /v1/attestations?type=vendor_of` returns current bindings only, `include_inactive=true` adds the rest (`active`, `revoked`, `holder_key_id` after rotation). `/v1/keys/published` is exactly the active root and verifier keys.
-- **Config** (env): `EATSIGHTS_TRUST_MAX_DEPTH` (4), `EATSIGHTS_VENDOR_OF_MAX_DAYS` (365), `EATSIGHTS_TRUST_STRIKES` (2), `EATSIGHTS_TRUST_STRIKE_WINDOW_DAYS` (180), `EATSIGHTS_TRUST_VOUCH_COOLDOWN_DAYS` (30). Added to `deploy/configmap.yaml`.
+- **Config** (env): `EATSIGHTS_TRUST_MAX_DEPTH` (4), `EATSIGHTS_VENDOR_OF_MAX_DAYS` (365), `EATSIGHTS_TRUST_STRIKES` (2), `EATSIGHTS_TRUST_STRIKE_WINDOW_DAYS` (180), `EATSIGHTS_TRUST_VOUCH_COOLDOWN_DAYS` (30). Added to `deploy/app/configmap.yaml`.
 - `openapi.json` regenerated (new `include_inactive` parameter, descriptions).
 
 ## Tests

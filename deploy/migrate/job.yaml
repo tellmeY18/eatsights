@@ -1,0 +1,42 @@
+# Runs `eatsights migrate` as the schema owner. Apply before every release:
+#   kubectl -n eatsights delete job eatsights-migrate --ignore-not-found
+#   kubectl apply -k deploy/migrate
+#   kubectl -n eatsights wait --for=condition=complete --timeout=5m job/eatsights-migrate
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eatsights-migrate
+  namespace: eatsights
+  labels: { app.kubernetes.io/name: eatsights, app.kubernetes.io/component: migrate }
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: eatsights, app.kubernetes.io/component: migrate }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: eatsights # set by ../release (kustomize images)
+          args: ["migrate"]
+          env:
+            # Owner credentials (DDL, roles, extensions); the app uses least-privilege logins.
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: eatsights-migrate, key: DATABASE_URL } }
+            - { name: RUST_LOG, value: info }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

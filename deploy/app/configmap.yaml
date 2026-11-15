@@ -11,7 +11,8 @@ data:
   TOKIO_WORKER_THREADS: "1"
   RUST_LOG: "info"
   EATSIGHTS_ROLES: "api,worker"
-  # Comma-separated CIDRs of proxies whose X-Forwarded-For is trusted (ingress pods).
+  # CIDRs whose X-Forwarded-For is trusted: the ingress controller pods (your pod CIDR).
+  # Wrong value = every client shares one rate-limit bucket, or clients can spoof IPs.
   EATSIGHTS_TRUSTED_PROXIES: "10.0.0.0/8"
   EATSIGHTS_RATE_PER_KEY_PER_MIN: "120"
   EATSIGHTS_RATE_PER_IP_PER_MIN: "600"

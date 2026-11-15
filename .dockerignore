@@ -1,0 +1,12 @@
+# Never send secrets or local state into the build context.
+.dev/
+.git/
+target/
+result
+result-*
+**/*.pem
+**/*.key
+**/.env
+**/.env.*
+node_modules/
+spike/

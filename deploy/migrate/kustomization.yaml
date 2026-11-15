@@ -1,0 +1,9 @@
+# Applied before every release (deploy/README.md). Not part of app/ because a Job's pod
+# template is immutable: delete the old Job, apply this, wait for completion, then roll app/.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: eatsights
+resources:
+  - job.yaml
+components:
+  - ../release

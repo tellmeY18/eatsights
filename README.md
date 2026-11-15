@@ -21,6 +21,11 @@ curl localhost:8080/healthz
 
 Without Nix: `docker compose up -d db`, or the whole stack with `docker compose --profile app up --build`.
 
+## Deploy
+
+- **Kubernetes:** container image `ghcr.io/tellmey18/eatsights` (multi-arch, built by `.github/workflows/image.yml`); step-by-step guide in [`deploy/README.md`](deploy/README.md).
+- **NixOS:** flake module `services.eatsights`, see [`nix/README.md`](nix/README.md).
+
 ## Layout
 
 `crates/` (core, db, api, worker, binary) · `migrations/` · `deploy/` (Kubernetes) · `docs/adr/` · `docs/proposals/`

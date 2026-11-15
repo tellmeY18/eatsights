@@ -216,7 +216,7 @@ in
         EATSIGHTS_CACHE_MB = 128;
         EATSIGHTS_TRUST_MAX_DEPTH = 4;
       };
-      description = "Any other environment variables (see `deploy/configmap.yaml`). Not for secrets: these land in the Nix store.";
+      description = "Any other environment variables (see `deploy/app/configmap.yaml`). Not for secrets: these land in the Nix store.";
     };
 
     runMigrations = mkOption {

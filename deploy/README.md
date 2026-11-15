@@ -1,44 +1,266 @@
-# Deploying Eatsights on Kubernetes
+# Deploying Eatsights to Kubernetes
 
-Plain manifests, no Helm, no operator chosen (the maintainer decides; AGENTS.md section 12).
+Plain manifests with kustomize (built into `kubectl`), no Helm, no operator. One container
+image, one PostgreSQL 18, one Deployment running the API and worker, one migration Job.
 
-```sh
-kubectl apply -f namespace.yaml -f configmap.yaml
-# copy secret.template.yaml, fill in, apply out of band
-kubectl apply -f migrate-job.yaml && kubectl -n eatsights wait --for=condition=complete job/eatsights-migrate
-kubectl apply -f deployment.yaml -f service.yaml -f ingress.yaml
+```
+deploy/
+  release/              kustomize Component: the image tag. Edit this per release.
+  app/                  namespace, ConfigMap, Deployment, Service, Ingress
+  migrate/              the migration Job (applied before each release)
+  secret.template.yaml  two Secrets to fill in out of band (never commit them)
+  postgres-roles.sql    database, logins and grants (run once)
+scripts/
+  trust-bootstrap.sh    root + first verifier keys, signed offline
+  prod-smoke.sh         read-only checks against a live deployment
 ```
 
-Migrations run only as the Job, never on replica start. Generate the root key offline with `eatsights keygen`; only the public key goes in the Secret.
+Checklist for a first production deployment, in order:
 
-## Postgres requirements
+1. [Image](#1-image) · 2. [Trust keys](#2-trust-keys-offline) · 3. [Database](#3-database) ·
+4. [Secrets](#4-secrets) · 5. [Configuration](#5-configuration) · 6. [Deploy](#6-deploy) ·
+7. [Publish the verifier](#7-publish-the-verifier) · 8. [Verify](#8-verify-in-production)
 
-- PostgreSQL 18, one instance, in-cluster or external.
-- Extensions: `pg_trgm`, `unaccent` (contrib). `postgis` optional; the MVP uses geohash + btree (see ADR-0001).
-- Starting parameters for a small instance: `shared_buffers=128MB`, `max_connections` ≥ 8 × replicas + headroom, `wal_level=replica`, `archive_mode=on` if using WAL archiving.
-- Login users: one for `DATABASE_URL` granted the `eatsights_write` and `eatsights_worker` roles; one for `DATABASE_READ_URL` granted `eatsights_read` only. Migrations need a user that can create schemas, roles and extensions.
+Requirements: Kubernetes 1.29+, an ingress controller (manifests assume ingress-nginx),
+optionally cert-manager, and PostgreSQL 18 with `pg_trgm` and `unaccent` (contrib).
 
-## Backups
+---
 
-Backups include the `private` schema; keep them encrypted and access-restricted. Public exports never include it.
+## 1. Image
 
-- Simple: nightly `pg_dump -Fc` uploaded to object storage, retained 30 days.
-- Better: base backup plus continuous WAL archiving to object storage (e.g. `pgBackRest` or `wal-g`) for point-in-time recovery.
+`.github/workflows/image.yml` builds on every push to `main` and every `v*` tag, natively on
+amd64 and arm64, pushes one multi-arch image to GHCR, attaches build provenance, then
+smoke-tests it (size budget, migrate, serve, probes) against PostgreSQL 18.
 
-## Restore drill (at least quarterly)
+| Push | Tags on `ghcr.io/tellmey18/eatsights` |
+|---|---|
+| `main` | `main`, `sha-<short>` |
+| tag `v0.1.0` | `0.1.0`, `0.1`, `latest`, `sha-<short>` |
 
-1. Start a fresh PG18 with the same extensions.
-2. Restore (`pg_restore -d eatsights dump.pgc`, or base backup + WAL replay to a target time).
-3. Point a staging deployment at it; check `/readyz`, `GET /v1/changes` latest `seq`, and spot-check a place.
-4. Record duration and data loss window in `docs/`.
+Production should run an **immutable** reference: `sha-<short>`, a version tag or a digest,
+never `main` or `latest`.
 
-During an outage, the CDN keeps serving reads via `stale-if-error`.
+- Package visibility: GHCR packages from a public repo start **private**. Either make the
+  package public (GitHub → Packages → eatsights → Package settings → Change visibility), or
+  create an `imagePullSecret` in the `eatsights` namespace and add it to the Deployment and
+  Job.
+- Verify provenance: `gh attestation verify oci://ghcr.io/tellmey18/eatsights:<tag> -R tellmeY18/eatsights`.
+- Image facts: static musl binary on `distroless/static` (CA certificates included), runs as
+  UID 65532, read-only root filesystem, port 8080, entrypoint `/eatsights`, default `serve`.
+  Budget: ≤ 30 MB compressed (CI enforces it).
 
-## Exports
+Building locally (any machine with Docker): `docker build -t eatsights:dev .`
 
-The worker writes public snapshots (gzip NDJSON + `manifest.json`, latest 7 kept) to `EATSIGHTS_EXPORT_DIR` (`/var/lib/eatsights/exports`) every `EATSIGHTS_EXPORT_INTERVAL_HOURS` (24); the API serves them at `/v1/export` from the same directory. Because the root filesystem is read-only, the directory is a volume:
+## 2. Trust keys (offline)
 
-- `emptyDir` (default in `deployment.yaml`): simplest; a restarted pod writes a fresh snapshot at start-up. Fine for one replica running `api,worker`.
-- `PersistentVolumeClaim`: keeps snapshots across restarts. Required if the API and worker run as separate Deployments (`--roles`), since both must see the same directory (ReadWriteMany, or co-locate them).
+The server only ever holds the root **public** key (AGENTS.md section 3, rule 8).
 
-Size it at roughly 2× one snapshot × 7. Exports contain only `public` data and are safe to mirror to a CDN or object storage.
+On an offline machine with the `eatsights` binary (built from the same commit):
+
+```sh
+scripts/trust-bootstrap.sh sign ./eatsights-keys
+```
+
+This writes the root and first verifier private keys (mode 600) and three **public** files:
+`root.public`, `verifier-registration.json`, `verifier-vouch.json`. Copy only those three
+off the machine. Store the private keys offline (encrypted USB / hardware key) and name the
+backup root holder in `GOVERNANCE.md`.
+
+> The keys in `~/eatsights-prod-keys` on the maintainer's laptop were generated by the
+> build agent on an online machine (2026-11-15). Use them for a first test of production if
+> you like, but regenerate offline before announcing the service, and move the private files
+> off the laptop.
+
+## 3. Database
+
+Any PostgreSQL 18: managed (RDS, Cloud SQL, Neon, Crunchy Bridge…), a VM, or in-cluster.
+No operator is chosen (ADR-0006).
+
+1. Create the database and three least-privilege logins (edit the passwords first):
+
+   ```sh
+   psql "postgres://ADMIN@HOST:5432/postgres?sslmode=require" -v ON_ERROR_STOP=1 \
+     -f deploy/postgres-roles.sql
+   ```
+
+   | Login | Used by | Can |
+   |---|---|---|
+   | `eatsights_owner` | migrate Job only | own and change the schema |
+   | `eatsights_app` | app `DATABASE_URL` | write path + worker (append-only enforced by triggers) |
+   | `eatsights_ro` | app `DATABASE_READ_URL` | `SELECT` on `public` only, no access to `private` |
+
+   Tested: the owner needs neither superuser nor `CREATEROLE`; the full end-to-end suite
+   passes with the app on `eatsights_app` / `eatsights_ro`.
+2. Parameters for a small instance: `shared_buffers=128MB`, `max_connections` ≥
+   2 × `EATSIGHTS_DB_POOL` (8) × replicas + 10, `wal_level=replica`.
+3. TLS: `sslmode=require` encrypts but does not verify the server certificate. For
+   `verify-full`, the server certificate must chain to a public CA (the image trusts the
+   Mozilla root set); managed services with a private CA need `sslrootcert=/path` and that
+   file mounted into the pod.
+4. Partitions: `observations` has monthly partitions through 2028-12 plus a default
+   partition; a later migration will extend them.
+5. **Backups are your responsibility** and are not set up by these manifests: nightly
+   `pg_dump -Fc` to object storage at minimum, base backup + WAL archiving (pgBackRest,
+   wal-g, or the managed service's PITR) preferably. Backups contain the `private` schema:
+   encrypt them and restrict access. See [Backups](#backups-and-restore).
+
+## 4. Secrets
+
+```sh
+cp deploy/secret.template.yaml ~/eatsights-secrets.yaml   # outside the repo
+$EDITOR ~/eatsights-secrets.yaml
+kubectl apply -f deploy/app/namespace.yaml
+kubectl apply -f ~/eatsights-secrets.yaml
+```
+
+| Secret / key | Value |
+|---|---|
+| `eatsights` / `DATABASE_URL` | `eatsights_app` login |
+| `eatsights` / `DATABASE_READ_URL` | `eatsights_ro` login (optional) |
+| `eatsights` / `EATSIGHTS_PSEUDONYM_SALT` | `head -c 32 /dev/urandom \| base64`. Keep it forever; rotating it needs `EATSIGHTS_PSEUDONYM_SALT_VERSION` + 1 |
+| `eatsights` / `EATSIGHTS_ROOT_PUBLIC_KEY` | contents of `root.public` |
+| `eatsights-migrate` / `DATABASE_URL` | `eatsights_owner` login. Mounted only by the Job |
+
+Sealed Secrets, External Secrets or SOPS work the same way: only the names and keys matter.
+
+## 5. Configuration
+
+`deploy/app/configmap.yaml` holds every non-secret setting with production defaults.
+Check these three before the first deploy:
+
+- `EATSIGHTS_BASE_URL`: the public URL (`https://eatsights.letsimpl.fyi`). It appears in
+  the OpenAPI `servers` and in export URLs.
+- `EATSIGHTS_TRUSTED_PROXIES`: the CIDR(s) of the ingress controller pods (usually the pod
+  CIDR). Only these may set `X-Forwarded-For`. Too narrow: every client shares one
+  rate-limit bucket. Too wide (`0.0.0.0/0`): clients can forge their IP.
+- `deploy/app/ingress.yaml`: `ingressClassName`, the cert-manager issuer (or remove the
+  annotation if TLS ends at a CDN or load balancer), and the host.
+
+Also note:
+
+- `EATSIGHTS_SWAGGER_UI` stays `false` in production (ADR-0005).
+- `EATSIGHTS_OSM_ENDPOINT` is unset, so the OSM checker is off. Set it to an Overpass URL to
+  enable it (one request per 10 s, ADR-0006).
+- `/metrics` is served on the same port and is public through the ingress. It holds only
+  counters, but you can block `/metrics` at the ingress and scrape the Service directly.
+
+## 6. Deploy
+
+Pick the image (once per release):
+
+```sh
+cd deploy/release
+kustomize edit set image eatsights=ghcr.io/tellmey18/eatsights:sha-<short>   # or edit newTag
+cd -
+```
+
+Then migrate first, roll the app second:
+
+```sh
+kubectl -n eatsights delete job eatsights-migrate --ignore-not-found
+kubectl apply -k deploy/migrate
+kubectl -n eatsights wait --for=condition=complete --timeout=5m job/eatsights-migrate
+kubectl -n eatsights logs job/eatsights-migrate        # {"message":"migrations applied"}
+
+kubectl apply -k deploy/app
+kubectl -n eatsights rollout status deploy/eatsights --timeout=3m
+```
+
+Preview what will change: `kubectl diff -k deploy/app`.
+
+Migrations are forward-only and idempotent; running the Job twice is harmless. The app
+never migrates on start.
+
+The namespace enforces the `restricted` Pod Security Standard; both pods comply.
+
+## 7. Publish the verifier
+
+Once the app answers, send the two pre-signed public files (no private key needed):
+
+```sh
+scripts/trust-bootstrap.sh post ./eatsights-keys https://eatsights.letsimpl.fyi
+```
+
+It registers the verifier key, posts the root's vouch, and prints the published keys:
+the root and the verifier. Rerunning it is harmless.
+
+## 8. Verify in production
+
+```sh
+scripts/prod-smoke.sh https://eatsights.letsimpl.fyi "$(cat ./eatsights-keys/root.public)"
+```
+
+Read-only: health, readiness, TLS, OpenAPI, contract files, registry, the expected root and
+a verifier, caching (`ETag`/304, gzip, `stale-if-error`), CORS, problem+json errors, Swagger
+off, no signatures or private attestations in public responses, and pinned immutable export
+URLs. It writes nothing.
+
+**Never run `scripts/e2e.sh` against production.** It creates places, keys and observations
+and needs the root private key.
+
+To test writes in production, use your own keys like any app would: register a key,
+create a real place you know, submit a price. Everything written is public, permanent and
+CC0.
+
+---
+
+## Upgrades and rollback
+
+- Upgrade: set the new tag in `deploy/release`, then section 6 again.
+- Rollback: set the previous tag and `kubectl apply -k deploy/app`. Migrations are
+  forward-only, so roll back the app only to a build whose migrations are already applied
+  (every older build is: new migrations only add).
+- `kubectl -n eatsights rollout undo deploy/eatsights` also works for the app.
+
+## Scaling
+
+One replica (`--roles api,worker`) is the default and fits the budgets in AGENTS.md 8.1.
+To scale reads, run two Deployments from the same image:
+
+- `api`: `--roles api`, N replicas, an HPA on CPU if you like.
+- `worker`: `--roles worker`, exactly **1** replica (aggregation, exports, sweeps).
+
+They coordinate through Postgres `LISTEN/NOTIFY`. With separate Deployments the export
+directory must be shared (a ReadWriteMany PVC), or keep the worker and one API replica in
+the same pod.
+
+Put a CDN in front: every public `GET` is cacheable, export files are immutable, and
+`stale-if-error` keeps reads up during a database outage.
+
+## Operations
+
+- Logs: JSON on stdout (`kubectl -n eatsights logs deploy/eatsights`). They never contain
+  private data.
+- Probes: `/healthz` (process alive, no database), `/readyz` (database reachable).
+- Metrics: `/metrics`, Prometheus text format.
+- Shutdown: SIGTERM drains in-flight requests (grace period 30 s).
+- Exports: written to `/var/lib/eatsights/exports` (an `emptyDir`, regenerated at start);
+  use a PVC to keep them across restarts. Size: about 2 × one snapshot × 7.
+
+## Backups and restore
+
+Backups include the `private` schema; keep them encrypted and access-restricted. Public
+exports never include it.
+
+- Minimum: nightly `pg_dump -Fc` uploaded to object storage, kept 30 days.
+- Better: base backup + continuous WAL archiving for point-in-time recovery.
+
+Restore drill (at least quarterly):
+
+1. Start a fresh PostgreSQL 18, run `deploy/postgres-roles.sql`.
+2. `pg_restore -d eatsights dump.pgc` (or base backup + WAL replay).
+3. Point a staging deployment at it; run `scripts/prod-smoke.sh`; check the latest
+   `/v1/changes` `seq` and spot-check a place.
+4. Record the duration and data-loss window in `docs/`.
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| Pod `CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user` | An image older than this guide; use one built by `image.yml` |
+| `ImagePullBackOff` | GHCR package is private: make it public or add an `imagePullSecret` |
+| `/readyz` 503 | Database unreachable or wrong credentials; see pod logs |
+| Migrate Job `permission denied` | The Job is not using the `eatsights_owner` login (`eatsights-migrate` Secret) |
+| All clients rate-limited together | `EATSIGHTS_TRUSTED_PROXIES` does not match the ingress pods |
+| Key registrations get 429 | Expected: 30 per IP per hour (`EATSIGHTS_KEYREG_PER_IP_PER_HOUR`) |
+| `/v1/export` 404 right after deploy | The worker writes the first snapshot at start-up; wait a minute |

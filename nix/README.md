@@ -74,7 +74,7 @@ EATSIGHTS_PSEUDONYM_SALT=<at least 32 random bytes, e.g. `head -c 32 /dev/urando
 
 ## Options
 
-Main ones: `enable`, `package`, `listenAddress` (127.0.0.1), `port` (8080), `openFirewall`, `roles`, `baseUrl`, `rootPublicKey`, `environmentFile`, `swaggerUi`, `exportDir`, `trustedProxies`, `osm.endpoint` (OSM checker is off unless set), `workerThreads`, `logLevel`, `runMigrations`, `database.{createLocally, postgresqlPackage, name, user, url, readUrl, poolSize}`. Anything else from `deploy/configmap.yaml` goes in `settings` (non-secret only), e.g. `settings.EATSIGHTS_CACHE_MB = 128;`.
+Main ones: `enable`, `package`, `listenAddress` (127.0.0.1), `port` (8080), `openFirewall`, `roles`, `baseUrl`, `rootPublicKey`, `environmentFile`, `swaggerUi`, `exportDir`, `trustedProxies`, `osm.endpoint` (OSM checker is off unless set), `workerThreads`, `logLevel`, `runMigrations`, `database.{createLocally, postgresqlPackage, name, user, url, readUrl, poolSize}`. Anything else from `deploy/app/configmap.yaml` goes in `settings` (non-secret only), e.g. `settings.EATSIGHTS_CACHE_MB = 128;`.
 
 ## Checks
 
